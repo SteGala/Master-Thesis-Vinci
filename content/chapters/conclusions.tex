@@ -1,0 +1,19 @@
+\chapter{Conclusions}
+\label{chap:conclusions}
+
+\section{Summary}
+\label{sec:conclusion-summary}
+
+\begin{itemize}
+    \item The GPU-sharing mechanism must be selected according to the workload's compute, memory, isolation, latency, and throughput requirements.
+    \item DRA primarily provides allocation flexibility and operational benefits; it does not inherently improve application performance.
+    \item Combining MIG and DRA is not universally optimal: MIG profiles and allocation policies must be tailored to specific workload requirements to maximize their benefits.
+\end{itemize}
+
+\section{Future Work}
+\label{sec:future-work}
+
+\begin{itemize}
+    \item Investigate automatically enforced or automatically reconfigured MIG layouts according to cluster demand.
+    \item Explore AI workload prediction and classification to select appropriate DRA-managed GPU or MIG resources before job admission.
+\end{itemize}

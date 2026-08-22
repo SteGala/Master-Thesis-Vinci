@@ -1,0 +1,30 @@
+\chapter{Introduction}
+\label{chap:introduction}
+
+\section{Problem Statement}
+\label{sec:problem-statement}
+
+\begin{itemize}
+    \item GPUs have become critical resources because of the rapid growth of artificial intelligence workloads, the expansion of data centres, and the associated infrastructure and energy costs.
+    \item AI workloads have heterogeneous compute, memory, latency, and throughput requirements; consequently, they cannot all be served efficiently using the same GPU allocation strategy.
+    \item GPUs are often underutilized, which leads to wasted computing capacity, energy, and infrastructure investment.
+    \item Kubernetes has become a major runtime and orchestration platform for containerized AI workloads.
+    \item Conventional Kubernetes device allocation handles accelerators in a relatively rigid and static manner, limiting the ability to adapt GPU resources to workload-specific requirements.
+\end{itemize}
+
+\section{Objectives}
+\label{sec:objectives}
+
+\begin{itemize}
+    \item Increase effective GPU utilization while preserving acceptable inference performance and workload isolation.
+    \item Design and implement proofs of concept to evaluate NVIDIA Multi-Instance GPU (MIG) and Kubernetes Dynamic Resource Allocation (DRA) under representative AI inference workloads.
+\end{itemize}
+
+\section{Thesis Structure}
+\label{sec:thesis-structure}
+
+\begin{itemize}
+    \item Chapter~\ref{chap:background} introduces GPU-sharing techniques, NVIDIA MIG, GPU support in Kubernetes, DRA, the Linux GPU software stack, and the NVIDIA GPU Operator.
+    \item Chapter~\ref{chap:implementation} describes the experimental testbed and the two evaluated use cases: concurrent Ollama inference services and Kueue-managed batch workloads.
+    \item Chapter~\ref{chap:conclusions} summarizes the main findings and identifies directions for future work.
+\end{itemize}
