@@ -1,2 +1,9 @@
 % abstract, choose between abstract and summary
-TEST
+The growing adoption of artificial intelligence is making GPUs an increasingly critical and expensive resource in cloud infrastructures. However, many inference workloads occupy an entire accelerator while using only a limited portion of the compute and memory capacity assigned to them, thus leaving valuable hardware stranded and compromising both economic and energy efficiency.
+This thesis investigates whether cloud-native GPU sharing and allocation mechanisms can convert this underutilization into measurable gains on Kubernetes, focusing on NVIDIA Multi-Instance GPU (MIG) and Kubernetes Dynamic Resource Allocation (DRA).
+
+The proposed architecture combines MIG and DRA with small-LLMs serving or short-lived inference workloads implemented as Kubernetes Jobs. MIG divides a physical GPU into isolated partitions, allowing multiple workloads to share the same accelerator while receiving dedicated compute and memory resources. DRA provides the allocation layer through which each workload can request a GPU or MIG partition according to its requirements.
+
+The evaluation uses a proof of concept based on Ollama and TinyLlama to compare whole-GPU execution, time-sharing and isolated replicas deployed across multiple MIG instances. The experiments show that confining a single replica to a smaller partition may reduce its individual throughput, but appropriately consolidating compatible replicas can substantially increase aggregate throughput up to double it. On the other hand, DRA primarily provides operational flexibility, but when resource requests are tailored to specific workloads, it can reduce unnecessary reservations and create opportunities for further improvements in performance.
+
+Overall, the study identifies the conditions under which MIG and DRA can increase throughput and consolidation while providing a credible path toward lower infrastructure cost and energy per unit of inference.

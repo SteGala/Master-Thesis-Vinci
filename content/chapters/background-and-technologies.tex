@@ -5,53 +5,39 @@
 \label{sec:gpu-sharing}
 
 \begin{itemize}
-    \item Describe the available GPU-sharing mechanisms and compare their isolation, flexibility, and resource-efficiency characteristics.
-    \item Explain why NVIDIA MIG was selected for the experimental work presented in this thesis.
+    \item descrizione tecnlogie disponibili e motivazione scelta MIG
 \end{itemize}
 
 \section{NVIDIA Multi-Instance GPU}
 \label{sec:mig}
 
 \begin{itemize}
-    \item Provide an in-depth description of the MIG architecture, supported instance profiles, resource partitioning, isolation properties, configuration workflow, and relevant limitations.
+    \item MIG deep dive
 \end{itemize}
 
 \section{GPUs in Kubernetes}
 \label{sec:gpus-kubernetes}
 
 \begin{itemize}
-    \item Explain how Kubernetes traditionally discovers, advertises, schedules, and exposes GPU resources through device plugins.
-    \item Discuss the implications of extended resources and device-plugin-based allocation for GPU workloads.
+    \item device plugin
 \end{itemize}
 
 \section{Dynamic Resource Allocation}
 \label{sec:dra}
 
 \begin{itemize}
-    \item Provide an in-depth description of the DRA architecture and its principal API objects.
-    \item Explain the resource claim lifecycle, device selection, scheduling integration, and allocation semantics relevant to NVIDIA GPUs and MIG devices.
-    \item Clarify the differences between DRA and conventional device-plugin-based allocation, including current operational constraints.
+    \item DRA deep dive
 \end{itemize}
 
 \section{Linux GPU Software Stack}
 \label{sec:linux-gpu-stack}
 
-\begin{itemize}
-    \item Describe the Linux software stack required to expose NVIDIA GPUs to containers, including the driver, container runtime integration, device discovery, and monitoring components.
-\end{itemize}
-
 \section{NVIDIA GPU Operator}
 \label{sec:gpu-operator}
-
-\begin{itemize}
-    \item Explain how the NVIDIA GPU Operator deploys and manages the software components required for GPU-enabled Kubernetes clusters.
-    \item Describe its role in configuring MIG and enabling NVIDIA's DRA driver in the experimental environment.
-\end{itemize}
 
 \section{Architecture Overview}
 \label{sec:architecture-overview}
 
 \begin{itemize}
-    \item Organize the system into three conceptual layers: the hardware layer, the resource-allocation layer, and the application layer.
-    \item Describe the responsibilities of each layer and the interactions among MIG configuration, Kubernetes resource allocation, and AI inference workloads.
+    \item definizione dei 3 layer: hardware, allocation e application
 \end{itemize}

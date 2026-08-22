@@ -5,9 +5,7 @@
 \label{sec:testbed-overview}
 
 \begin{itemize}
-    \item Describe the Google Cloud virtual machine, the NVIDIA A100 GPU attached through passthrough, and the single-node K3s cluster.
-    \item Document the Kubernetes, NVIDIA GPU Operator, MIG, and DRA configurations used in the experiments.
-    \item Present the monitoring stack and the Grafana dashboards used to observe performance, GPU utilization, and energy-related metrics.
+    \item descrizione vm, gpu, cluster, configurazioni gpu operator e dashboard garafana
 \end{itemize}
 
 \section{Use Case 1: Multiple Ollama Instances}
@@ -17,36 +15,34 @@
 \label{subsec:multi-ollama-problem}
 
 \begin{itemize}
-    \item Small language models may not saturate an entire GPU when served by a single Ollama instance.
-    \item A single inference queue may introduce head-of-line blocking, causing short requests to wait behind longer requests.
+    \item modelli piccoli non saturano la gpu
+    \item Head-of-Line Blocking
 \end{itemize}
 
 \subsection{Architecture Overview}
 \label{subsec:multi-ollama-architecture}
 
 \begin{itemize}
-    \item Describe the DRA claim templates and the deployment of multiple Ollama instances on separate MIG devices.
-    \item Document the selected model, the load generator, the request profile, and the collection of application- and GPU-level metrics.
+    \item descrizione claim templates, deploy ollama, modello usato, load generator ecc
 \end{itemize}
 
 \subsection{Testing Methodology}
 \label{subsec:multi-ollama-methodology}
 
 \begin{itemize}
-    \item Establish a baseline consisting of one Ollama instance using the entire GPU.
-    \item Evaluate time sharing as an alternative GPU-sharing mechanism.
-    \item Evaluate the effect of restricting one Ollama instance to a smaller MIG profile.
-    \item Evaluate multiple concurrent Ollama instances assigned to separate MIG devices.
+    \item baseline: 1 ollama su intera gpu
+    \item time-sharing
+    \item restringere l'istanza
+    \item istanze multiple
 \end{itemize}
 
 \subsection{Results and Evaluation}
 \label{subsec:multi-ollama-results}
 
 \begin{itemize}
-    \item Compare the measured throughput, latency, GPU utilization, and energy-related metrics across the evaluated configurations.
-    \item Discuss why workload-aware right-sizing of MIG instances is critical to obtaining a net benefit.
-    \item Distinguish the performance gains produced by MIG-based consolidation from DRA's role as a provisioning mechanism in this use case.
-    \item Motivate the need for a workload in which resource requirements vary across executions and can therefore benefit from dynamic allocation.
+    \item discussione sui numeri
+    \item il right sizing è critico
+    \item DRA no perfomance boost, statico. trovare uno scenario che ne possa benificiare
 \end{itemize}
 
 \section{Use Case 2: Kueue-Managed Batch Workloads}
@@ -56,34 +52,30 @@
 \label{subsec:kueue-problem}
 
 \begin{itemize}
-    \item The finite lifecycle of batch jobs aligns naturally with DRA claims, because resources can be selected for each execution and released when a job terminates.
-    \item Kueue priorities determine admission precedence but do not, by themselves, guarantee a job's execution time or end-to-end service level.
-    \item Introduce service classes that combine scheduling priority with workload-appropriate GPU or MIG allocation policies.
+    \item la natura dei job si sposa bene con le richieste dinamiche DRA
+    \item priorità garantisce precedenza di allocazione, ma non tempo di esecuzione
+    \item Idea: Service Class
 \end{itemize}
 
 \subsection{Kueue Background}
 \label{subsec:kueue-background}
 
 \begin{itemize}
-    \item Explain Kueue's purpose and its principal concepts for queueing and admitting Kubernetes batch workloads.
-    \item Describe priority management in Kueue and its interaction with resource availability, quotas, and workload admission.
+    \item cosa è e a cosa serve kueue
+    \item gestione delle priorità in kueue
 \end{itemize}
 
 \subsection{Architecture Overview}
 \label{subsec:kueue-architecture}
 
 \begin{itemize}
-    \item Define service classes through combinations of Kueue priorities, DRA device classes, and resource claim templates.
-    \item Motivate the selected conservative and aggressive resource-allocation policies.
-    \item Describe the heterogeneous job pool, its workload profiles, submission process, and resource lifecycle.
-    \item Define the experimental scenarios: a Gold workload assigned to a medium MIG profile, a Gold workload assigned to a large MIG profile, a static mixed-workload baseline, and the dynamic D-Flex policy.
+    \item defnizione delle priorità e della classi QoS attraverso la combinazione di deviceClasses e ClaimTemplates e motivazione delle scelte (coservativa vs aggressiva)
+    \item descrizione scenario: job pool 
+    \item baseline gold su M
+    \item baseline gold su L
+    \item baseline mix
+    \item d-flex
 \end{itemize}
 
 \subsection{Results and Evaluation}
 \label{subsec:kueue-results}
-
-\begin{itemize}
-    \item Compare admission delay, job completion time, throughput, GPU utilization, energy-related metrics, and consolidation density across the baseline and dynamic scenarios.
-    \item Evaluate whether matching each job profile to an appropriate DRA-managed MIG device provides a measurable advantage over static allocation.
-    \item Discuss the trade-offs among service differentiation, resource efficiency, predictability, and operational complexity.
-\end{itemize}
