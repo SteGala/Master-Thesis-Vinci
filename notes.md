@@ -7,33 +7,37 @@ Introduction
             kubernetes runtime platform principale
             kubernetes alloca queto tipo di risorse in maniera ridamente statica
         )
-    Objective
+    Objectives
         (
             aumentare la GPU utilization
             PoC
         )
-    struttura della tesi    
+    Thesis Structure
+
+State of the art
+    (altre ricerche che si occupano di migliorare la gpu utilization)    
 
 background and technologies
     gpu sharing
         (descrizione tecnlogie disponibili e motivazione scelta MIG)
-    mig
+    NVIDIA Multi-Instance GPU
         (MIG deep dive)
-    gpu on kubernetes
+    gpus in kubernetes
         (device plugin)
-    DRA
+    Dynamic Resource Allocation 
         (DRA deep dive)
-    GPU linux software stack
-    kubernetes gpu operator
-    Architecture overview
-        (definizione dei 3 layer: hardware, allocation e application)
+    Linux GPU Software Stack
+    NVIDIA GPU Operator
+
+Architecture
+    (definizione dei 3 layer: hardware, allocation e application)
 
 Implementazione
     testbed overview
         (
             descrizione vm, gpu, cluster, configurazioni gpu operator e dashboard garafana
         )
-    caso 1: multi ollama
+    Use Case 1: Multiple Ollama Instances
         problem statement
             (
                 modelli piccoli non saturano la gpu
@@ -50,14 +54,14 @@ Implementazione
                 restringere l'istanza
                 istanze multiple                
             )
-        results evaluation
+        Results and Evaluation
             (
                 discussione sui numeri
                 il right sizing è critico
                 DRA no perfomance boost, statico. trovare uno scenario che ne possa benificiare
             )
 
-    caso 2: kueue
+    Use Case 2: Kueue-Managed Batch Workloads
         problem statement
             (
                 la natura dei job si sposa bene con le richieste dinamiche DRA
