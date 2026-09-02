@@ -51,19 +51,7 @@ To investigate that question, the second proof of concept considers batch infere
 
 The scope of dynamic behaviour is deliberately bounded. This thesis does not assume that an already running container can transparently exchange or resize its assigned GPU. Adaptation is considered between jobs or executions, with resource reclamation governed by the actual Pod and claim lifecycle. In particular, completion of application work must not be confused with deletion of every associated resource object. Likewise, a benefit obtained by selecting among existing MIG instances must be distinguished from automatic reconfiguration of the physical partition layout.
 
-A third objective is to provide an evaluation that captures both benefits and costs. Relevant measurements include aggregate throughput, request latency, job completion and waiting times, GPU activity and memory use, and energy per unit of useful work where power telemetry supports that calculation. Repeated runs and documented configurations are needed to assess whether differences are reproducible. Operational complexity, compatibility constraints, and the effort required to configure and manage the platform are part of the assessment rather than incidental implementation details.
-
 The experimental platform uses an NVIDIA A100 attached to a Google Cloud virtual machine, a single-node K3s cluster, the NVIDIA GPU Operator, and a Prometheus-based monitoring stack. This testbed supports controlled investigation of the proposed mechanisms, but it does not establish behaviour at multi-node production scale or demonstrate high availability under physical-node failure. The intended contribution is therefore a reproducible implementation and an evidence-based account of the conditions under which MIG and DRA are useful, including conditions under which they offer little benefit or impose unacceptable trade-offs.
 
 \section{Thesis Structure}
 \label{sec:thesis-structure}
-
-Chapter~\ref{chap:state-of-the-art} reviews related research on improving GPU utilization and positions this work in relation to existing resource-management approaches.
-
-Chapter~\ref{chap:background} introduces the technologies required to understand the proposed platform: GPU sharing, NVIDIA MIG, GPU support in Kubernetes, DRA, the Linux GPU software stack, and the NVIDIA GPU Operator.
-
-Chapter~\ref{chap:architecture} presents the architecture through its hardware, allocation, and application layers, explaining the responsibilities assigned to each and their interactions.
-
-Chapter~\ref{chap:implementation} describes the testbed, the multiple-Ollama proof of concept, and the Kueue-managed batch scenario. It details their implementation and evaluates the experimental results against the selected baselines.
-
-Finally, Chapter~\ref{chap:conclusions} summarizes the findings, discusses their implications and limitations, and outlines future work on automated MIG management and workload-aware resource assignment.
