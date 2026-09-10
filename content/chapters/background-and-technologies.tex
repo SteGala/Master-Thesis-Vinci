@@ -28,7 +28,7 @@ Sharing mechanisms operate at different layers and consequently provide differen
     \end{tabularx}
 \end{table}
 
-\subsection{Application-Level Concurrency with CUDA Streams}
+\subsection{CUDA Streams: Application-Level Concurrency}
 
 A CUDA stream is an ordered sequence of device operations. Operations within one stream execute in issue order, whereas independent work submitted to different streams may overlap when dependencies, implicit synchronization, and hardware availability permit it. Streams can, for example, overlap a host-to-device transfer with a kernel or allow kernels whose resource footprints leave spare capacity to execute concurrently~\cite{nvidia2026cudastreams}. This is the finest-grained option considered here and can improve the efficiency of a single application without introducing another scheduler.
 
