@@ -1,14 +1,42 @@
 \chapter{Background and Technologies}
 \label{chap:background}
 
-This chapter introduces the infrastructure mechanisms on which the experimental work is built. It first compares the main ways of sharing an NVIDIA GPU, then examines Multi-Instance GPU (MIG) in detail. The discussion subsequently moves up the software stack, from conventional accelerator allocation in Kubernetes to Dynamic Resource Allocation (DRA), the Linux components required to execute GPU containers, and the NVIDIA GPU Operator that manages those components as a coordinated system.
+Overcommitting hardware resources can help reduce underutilization by allowing multiple workloads to exploit capacity that would otherwise remain idle under exclusive allocation. This chapter therefore examines the principal GPU-sharing techniques available in the NVIDIA ecosystem. The focus on NVIDIA reflects its central role in the current AI accelerator landscape and the resulting relevance of its hardware and software stack to contemporary AI infrastructure~\cite{nvidia2026annualreport}.
 
 \section{GPU Sharing}
 \label{sec:gpu-sharing}
 
 Exclusive allocation is simple and provides a clear ownership boundary, but it is inefficient when a workload uses only a fraction of the accelerator. In that case the unused streaming multiprocessors, memory capacity, or memory bandwidth cannot be assigned to another Pod even though the scheduler considers the device occupied. GPU sharing addresses this mismatch by allowing independent work to use the same physical accelerator, either concurrently or in alternating time intervals. Its purpose is therefore not to make an individual kernel intrinsically faster. The expected benefit is higher aggregate utilization and throughput, or the ability to serve more users with the same hardware. Whether that benefit is achieved depends on resource compatibility: workloads that compete for the same bottleneck can slow each other down, and consolidation may increase latency variability.
 
-Sharing mechanisms operate at different layers and consequently provide different guarantees. CUDA streams expose concurrency inside an application; time-slicing multiplexes CUDA contexts; Multi-Process Service (MPS) enables work from cooperating processes to overlap; virtual GPU (vGPU) software presents mediated devices to virtual machines; and MIG divides supported GPUs spatially. Table~\ref{tab:gpu-sharing-comparison} summarizes these distinctions.
+Sharing mechanisms operate at different layers and consequently provide different guarantees. The following discussion begins with the three techniques most directly related to consolidating independent workloads on an NVIDIA GPU---time-slicing, Multi-Process Service (MPS), and Multi-Instance GPU (MIG)---and then considers CUDA streams and virtual GPUs, which address sharing at the application and virtualization layers respectively.
+
+\subsection{Time-Slicing}
+
+With time-slicing, several CUDA contexts receive access to the same GPU in successive scheduling intervals. In Kubernetes, the NVIDIA device plugin can advertise several logical replicas for one physical GPU so that more Pods can be admitted. These replicas are scheduling tokens rather than proportional compute reservations: requesting two replicas does not guarantee twice the processing time of a Pod requesting one. The workloads share GPU memory and the physical failure domain, and NVIDIA explicitly notes that this mode does not provide the memory or fault isolation of MIG~\cite{nvidia2026timeslicing}. The absence of fixed spatial partitions makes the mechanism flexible and allows a workload to exploit idle cycles when its neighbours are inactive. Conversely, simultaneous demand introduces context switching, contention, and less predictable tail latency. Time-slicing is therefore attractive for development, notebooks, intermittent inference, and other trusted best-effort workloads, especially on GPUs that do not support MIG.
+
+\subsection{Multi-Process Service}
+
+MPS changes the execution model from alternating independent contexts to cooperative multi-process execution. A control daemon starts an MPS server, while the CUDA driver transparently connects client processes to it. Work from different clients can be submitted concurrently, allowing kernels and copies to overlap and reducing repeated context-switch and on-device context-storage costs~\cite{nvidia2026mps}. An active-thread percentage can limit how much execution capacity a client may use, but this is a ceiling rather than a dedicated reservation: clients may still execute on the same SMs and contend for shared memory-system resources.
+
+MPS is particularly effective for compatible CUDA processes that individually launch small kernels, including tightly controlled HPC or inference workers. Its trust model must nevertheless be considered. On Volta and newer GPUs, clients have separate address spaces, but a fatal GPU fault can still affect the set of clients sharing the device, and monitoring may attribute activity to the MPS server rather than directly to each application~\cite{nvidia2026mpsconsiderations}. MPS consequently improves concurrency and density, but does not reproduce the hardware fault and performance isolation of MIG.
+
+\subsection{Multi-Instance GPU}
+
+MIG divides a supported physical GPU into multiple spatial instances that can be assigned to independent workloads. Unlike temporal multiplexing, each instance receives a defined fraction of compute and memory resources and offers stronger memory isolation, fault containment, and performance predictability~\cite{nvidia2026mig}. This makes MIG particularly suitable for multi-tenant environments and latency-sensitive services whose resource requirements fit within a fraction of a large accelerator. Its principal trade-off is reduced elasticity: instances follow supported profiles, and capacity reserved to an idle partition cannot be borrowed transparently by a busy neighbour. Selecting an appropriate partition size and geometry is therefore essential to avoid replacing whole-GPU underutilization with underutilized partitions. Section~\ref{sec:mig} examines the architecture and lifecycle of MIG in detail.
+
+\subsection{CUDA Streams: Application-Level Concurrency}
+
+A CUDA stream is an ordered sequence of device operations. Operations within one stream execute in issue order, whereas independent work submitted to different streams may overlap when dependencies, implicit synchronization, and hardware availability permit it. Streams can, for example, overlap a host-to-device transfer with a kernel or allow kernels whose resource footprints leave spare capacity to execute concurrently~\cite{nvidia2026cudastreams}. This is the finest-grained option considered here and can improve the efficiency of a single application without introducing another scheduler.
+
+CUDA streams should not be confused with infrastructure-level GPU sharing. They normally require the application or framework to organize asynchronous work explicitly, and they do not create a resource boundary between users. Concurrent execution is also conditional rather than guaranteed: kernels that collectively consume all registers, shared memory, or execution units may still serialize. Streams are consequently appropriate when one application controls several independent operations, but they do not allow Kubernetes to account for fractions of a GPU or protect one tenant from another. They may nevertheless complement infrastructure-level techniques, for example by exploiting concurrency within an individual MIG instance.
+
+\subsection{Virtual GPUs}
+
+NVIDIA vGPU software operates at the virtualization layer. A vGPU Manager in the hypervisor exposes virtual PCIe devices to guest virtual machines, each of which runs a guest driver. A time-sliced vGPU receives a fixed framebuffer allocation while sharing execution engines according to a best-effort, equal-share, or fixed-share scheduling policy. This provides a familiar VM management boundary and supports enterprise virtualization workflows. It can also reclaim unused processing intervals more flexibly than a fixed spatial partition, although latency and throughput vary with the activity of neighbouring VMs~\cite{nvidia2026vgpu}.
+
+On compatible hardware and hypervisors, vGPU can be backed by MIG. A one-to-one MIG-backed vGPU gives a VM exclusive access to one GPU Instance, combining VM isolation and management with MIG's spatial partition. More recent platforms can additionally time-slice vGPUs within a MIG instance. These arrangements are useful when the operational unit is a VM, but they require the supported hypervisor, host and guest drivers, and the corresponding NVIDIA software entitlement. They are therefore conceptually related to, but operationally different from, exposing bare-metal GPU or MIG devices directly to Linux containers. The technical brief supplied for this thesis emphasizes the same trade-off: temporal vGPU scheduling is flexible and can harvest idle cycles, whereas MIG prioritizes predictable low-latency service and error isolation~\cite{nvidia2020migvcs}.
+
+No mechanism dominates all scenarios. Time-slicing maximizes simplicity and density; MPS is effective for cooperating processes; MIG supplies strong spatial boundaries; CUDA streams provide application-local concurrency; and vGPU integrates with VM-centric infrastructure. Hybrid configurations are also possible, such as running MPS or CUDA streams within a MIG instance, or exposing a MIG-backed vGPU to a virtual machine. The selection must therefore follow the required unit of allocation, workload trust, memory footprint, latency sensitivity, and acceptable operational complexity.
 
 \begin{table}[htbp]
     \centering
@@ -19,41 +47,19 @@ Sharing mechanisms operate at different layers and consequently provide differen
         \toprule
         \textbf{Mechanism} & \textbf{Scope and execution} & \textbf{Main advantages} & \textbf{Main limitations and suitable scenarios} \\
         \midrule
-        CUDA streams & Operations submitted by one application context may overlap. & Low overhead and direct application control; useful for overlapping transfers and kernels. & Requires application changes and sufficient independent work; it is not a multi-tenant allocation or isolation mechanism. \\
         Time-slicing & CUDA contexts or Kubernetes replicas alternate on one GPU. & Simple, broadly applicable, and able to use idle cycles without fixed spatial boundaries. & Shared memory and failure domain, context-switch overhead, and variable latency; appropriate for development, bursty, or best-effort workloads. \\
         MPS & Kernels and memory copies from multiple client processes can execute concurrently through an MPS service. & Reduces context switching and can fill unused execution capacity more effectively than pure time-slicing. & Clients still share physical resources and fault containment is weaker than MIG; best suited to trusted, compatible, compute-oriented processes. \\
-        vGPU & A hypervisor assigns virtual GPU profiles to virtual machines, normally using temporal scheduling or MIG-backed devices. & VM-level management, address-space separation, and configurable scheduling policies. & Requires a supported virtualization stack and licensing; temporal profiles remain subject to interference. \\
         MIG & A supported GPU is divided into hardware-isolated spatial instances. & Dedicated compute and memory paths provide predictable capacity, memory isolation, and stronger fault containment. & Fixed profiles can cause fragmentation and unused capacity cannot be borrowed across instances; appropriate when QoS and multi-tenant isolation are priorities. \\
+        CUDA streams & Operations submitted by one application context may overlap. & Low overhead and direct application control; useful for overlapping transfers and kernels. & Requires application changes and sufficient independent work; it is not a multi-tenant allocation or isolation mechanism. \\
+        vGPU & A hypervisor assigns virtual GPU profiles to virtual machines, normally using temporal scheduling or MIG-backed devices. & VM-level management, address-space separation, and configurable scheduling policies. & Requires a supported virtualization stack and licensing; temporal profiles remain subject to interference. \\
         \bottomrule
     \end{tabularx}
 \end{table}
 
-\subsection{CUDA Streams: Application-Level Concurrency}
-
-A CUDA stream is an ordered sequence of device operations. Operations within one stream execute in issue order, whereas independent work submitted to different streams may overlap when dependencies, implicit synchronization, and hardware availability permit it. Streams can, for example, overlap a host-to-device transfer with a kernel or allow kernels whose resource footprints leave spare capacity to execute concurrently~\cite{nvidia2026cudastreams}. This is the finest-grained option considered here and can improve the efficiency of a single application without introducing another scheduler.
-
-CUDA streams should not be confused with infrastructure-level GPU sharing. They normally require the application or framework to organize asynchronous work explicitly, and they do not create a resource boundary between users. Concurrent execution is also conditional rather than guaranteed: kernels that collectively consume all registers, shared memory, or execution units may still serialize. Streams are consequently appropriate when one application controls several independent operations, but they do not allow Kubernetes to account for fractions of a GPU or protect one tenant from another.
-
-\subsection{Temporal Sharing and Multi-Process Service}
-
-With time-slicing, several CUDA contexts receive access to the same GPU in successive scheduling intervals. In Kubernetes, the NVIDIA device plugin can advertise several logical replicas for one physical GPU so that more Pods can be admitted. These replicas are scheduling tokens rather than proportional compute reservations: requesting two replicas does not guarantee twice the processing time of a Pod requesting one. The workloads share GPU memory and the physical failure domain, and NVIDIA explicitly notes that this mode does not provide the memory or fault isolation of MIG~\cite{nvidia2026timeslicing}. The absence of fixed spatial partitions makes the mechanism flexible and allows a workload to exploit idle cycles when its neighbours are inactive. Conversely, simultaneous demand introduces context switching, contention, and less predictable tail latency. Time-slicing is therefore attractive for development, notebooks, intermittent inference, and other trusted best-effort workloads, especially on GPUs that do not support MIG.
-
-MPS changes the execution model from alternating independent contexts to cooperative multi-process execution. A control daemon starts an MPS server, while the CUDA driver transparently connects client processes to it. Work from different clients can be submitted concurrently, allowing kernels and copies to overlap and reducing repeated context-switch and on-device context-storage costs~\cite{nvidia2026mps}. An active-thread percentage can limit how much execution capacity a client may use, but this is a ceiling rather than a dedicated reservation: clients may still execute on the same SMs and contend for shared memory-system resources.
-
-MPS is particularly effective for compatible CUDA processes that individually launch small kernels, including tightly controlled HPC or inference workers. Its trust model must nevertheless be considered. On Volta and newer GPUs, clients have separate address spaces, but a fatal GPU fault can still affect the set of clients sharing the device, and monitoring may attribute activity to the MPS server rather than directly to each application~\cite{nvidia2026mpsconsiderations}. MPS consequently improves concurrency and density, but does not reproduce the hardware fault and performance isolation of MIG.
-
-\subsection{Virtual GPUs}
-
-NVIDIA vGPU software operates at the virtualization layer. A vGPU Manager in the hypervisor exposes virtual PCIe devices to guest virtual machines, each of which runs a guest driver. A time-sliced vGPU receives a fixed framebuffer allocation while sharing execution engines according to a best-effort, equal-share, or fixed-share scheduling policy. This provides a familiar VM management boundary and supports enterprise virtualization workflows. It can also reclaim unused processing intervals more flexibly than a fixed spatial partition, although latency and throughput vary with the activity of neighbouring VMs~\cite{nvidia2026vgpu}.
-
-On compatible hardware and hypervisors, vGPU can be backed by MIG. A one-to-one MIG-backed vGPU gives a VM exclusive access to one GPU Instance, combining VM isolation and management with MIG's spatial partition. More recent platforms can additionally time-slice vGPUs within a MIG instance. These arrangements are useful when the operational unit is a VM, but they require the supported hypervisor, host and guest drivers, and the corresponding NVIDIA software entitlement. They are therefore conceptually related to, but operationally different from, exposing bare-metal GPU or MIG devices directly to Linux containers. The technical brief supplied for this thesis emphasizes the same trade-off: temporal vGPU scheduling is flexible and can harvest idle cycles, whereas MIG prioritizes predictable low-latency service and error isolation~\cite{nvidia2020migvcs}.
-
-No mechanism dominates all scenarios. Streams provide application-local concurrency; time-slicing maximizes simplicity and density; MPS is effective for cooperating processes; vGPU integrates with VM-centric infrastructure; and MIG supplies the strongest spatial boundaries among these options. Hybrid configurations are also possible, such as running MPS within a MIG instance. The selection must therefore follow the required unit of allocation, workload trust, memory footprint, latency sensitivity, and acceptable operational complexity.
-
 \section{NVIDIA Multi-Instance GPU}
 \label{sec:mig}
 
-NVIDIA introduced MIG with the Ampere generation to partition supported data-center GPUs into independently usable instances. Instead of allowing every process to contend for the complete device, MIG divides compute and memory-system resources spatially. Each instance is presented to CUDA as a device and can execute concurrently with instances on the same physical GPU. This makes MIG suitable for workloads that fit within a fraction of a large accelerator but still require predictable capacity and isolation~\cite{nvidia2026mig}.
+The general role and trade-offs of MIG were introduced in the preceding comparison. This section focuses instead on its hardware organization, the profiles and placement constraints relevant to the NVIDIA A100, and the configuration lifecycle exposed by the NVIDIA software stack.
 
 \subsection{Architecture and Isolation}
 
@@ -115,12 +121,12 @@ This model deliberately keeps the scheduler vendor-neutral, but the abstraction 
 
 The device-plugin API also offers no native per-workload configuration or claim object with an independent lifecycle. A request is made by a particular container, and devices cannot ordinarily be shared between containers through that request. Vendor extensions can oversubscribe the advertised count for time-slicing, but the Kubernetes scheduler then accounts logical replicas rather than actual memory or compute use. Consequently, a plugin can expose pre-created MIG devices effectively, yet it cannot by itself express a request for any device with at least a stated capacity, coordinate several device constraints, or provision a new partition as part of scheduling. These limitations motivate DRA.
 
-\section{Dynamic Resource Allocation}
+\subsection{Dynamic Resource Allocation}
 \label{sec:dra}
 
 DRA is a Kubernetes framework for describing, selecting, and preparing specialized resources through structured API objects. It follows a claim-oriented model similar to dynamic storage provisioning: the workload declares what it needs, Kubernetes selects an eligible resource together with a node, and a vendor driver performs device-specific preparation. The structured-parameter DRA API is stable and enabled by default in Kubernetes 1.35, while several advanced capabilities remain protected by separate beta or alpha feature gates~\cite{kubernetes135dra}.
 
-\subsection{The Kubernetes DRA Framework}
+\subsubsection{The Kubernetes DRA Framework}
 
 Four objects define the core model:
 
@@ -137,7 +143,7 @@ Allocation is coordinated with Pod scheduling. The driver first publishes Resour
 
 DRA provides a richer control plane, but it is not a performance accelerator by itself. If a claim always selects the same preconfigured device as a device-plugin request, the CUDA workload receives essentially the same hardware. The value lies in expressing attributes, alternatives, topology, sharing, and device preparation, and in making a new allocation decision for each claim. DRA also does not imply transparent migration or in-place resizing of a GPU already used by a running container. Moreover, Kubernetes 1.35 still treats capabilities such as partitionable devices and consumable capacity as opt-in alpha features, and DRA-device preemption has limitations. Production designs must be matched to the exact Kubernetes and driver versions rather than assuming every proposal in the framework is generally available.
 
-\subsection{The NVIDIA DRA Driver}
+\subsubsection{The NVIDIA DRA Driver}
 
 The DRA Driver for NVIDIA GPUs implements the vendor side of this framework. Its GPU plugin publishes full GPUs, MIG devices, and, when enabled, VFIO passthrough devices in ResourceSlices. The entries include NVIDIA-specific attributes such as product name, architecture, CUDA compute capability, memory, MIG profile, number of multiprocessors, and parent GPU identifier. The Helm chart supplies DeviceClasses including \texttt{gpu.nvidia.com} for full GPUs and \texttt{mig.nvidia.com} for MIG devices. Claims can then use CEL selectors to request a capability rather than a hard-coded device identifier; a MIG claim can, for example, require a given profile or a minimum number of multiprocessors~\cite{nvidia2026dradriver,nvidia2026draattributes}.
 
