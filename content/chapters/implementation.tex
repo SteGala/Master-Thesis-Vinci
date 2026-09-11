@@ -1,6 +1,15 @@
 \chapter{Implementation}
 \label{chap:implementation}
 
+\section{Architecture Overview}
+\label{chap:architecture-overview}
+
+\begin{itemize}
+    \item definizione dei 3 layer: hardware, allocation e application
+\end{itemize}
+
+\section{Find Title}
+
 \section{Testbed Overview}
 \label{sec:testbed-overview}
 
@@ -8,7 +17,7 @@
     \item descrizione vm, gpu, cluster, configurazioni gpu operator e dashboard garafana
 \end{itemize}
 
-\section{Use Case 1: Multiple Ollama Instances}
+\section{PoC 1: Parallel Ollama Instances}
 \label{sec:multi-ollama}
 
 \subsection{Problem Statement}
@@ -19,7 +28,7 @@
     \item Head-of-Line Blocking
 \end{itemize}
 
-\subsection{Architecture Overview}
+\subsection{System Design}
 \label{subsec:multi-ollama-architecture}
 
 \begin{itemize}
@@ -45,7 +54,7 @@
     \item DRA no perfomance boost, statico. trovare uno scenario che ne possa benificiare
 \end{itemize}
 
-\section{Use Case 2: Kueue-Managed Batch Workloads}
+\section{PoC 2: Kueue-Managed Batch Workloads}
 \label{sec:kueue-use-case}
 
 \subsection{Problem Statement}
@@ -65,7 +74,7 @@
     \item gestione delle priorità in kueue
 \end{itemize}
 
-\subsection{Architecture Overview}
+\subsection{System Design}
 \label{subsec:kueue-architecture}
 
 \begin{itemize}
