@@ -4,47 +4,182 @@
 \section{Architecture Overview}
 \label{chap:architecture-overview}
 
-\begin{itemize}
-    \item definizione dei 3 layer: hardware, allocation e application
-\end{itemize}
+The implementation follows a layered architecture that separates the physical organization of the accelerator from the way applications request it. This separation is particularly important for GPUs: although MIG determines which devices physically exist, a tenant should not need to identify a particular GPU or MIG UUID in its Pod specification. Instead, the application declares the characteristics of the resource it requires, while the infrastructure selects and prepares a compatible device.
+
+Table~\ref{tab:logical-architecture} summarizes the resulting logical architecture. The hardware and allocation layers jointly form the \emph{infrastructure layer}; the application layer consumes the capabilities exposed by that infrastructure.
+
+\begin{table}[htbp]
+    \centering
+    \small
+    \caption{Logical layers of the implemented GPU platform.}
+    \label{tab:logical-architecture}
+    \begin{tabularx}{\textwidth}{@{}p{0.18\textwidth}p{0.17\textwidth}X p{0.25\textwidth}@{}}
+        \toprule
+        \textbf{Macro-layer} & \textbf{Layer} & \textbf{Responsibility} & \textbf{Main components} \\
+        \midrule
+        Application & Application & Runs tenant workloads directly or through higher-level frameworks that coordinate their execution. & Tenant Pods, Ollama, Kueue, and potentially frameworks such as KubeRay. \\
+        Infrastructure & Allocation & Translates declarative device requirements into the allocation and preparation of a compatible resource for a Pod. & Kubernetes scheduler, ResourceClaims, ResourceClaimTemplates, DeviceClasses, ResourceSlices, and the NVIDIA DRA driver. \\
+        Infrastructure & Hardware & Controls the physical accelerator and the set of GPU devices that can be allocated by the upper layer. & NVIDIA A100, MIG, NVIDIA GPU Operator, and MIG Manager. \\
+        \bottomrule
+    \end{tabularx}
+\end{table}
+
+At the bottom, the \emph{hardware layer} manages the accelerator as a node resource. In this testbed the A100 is operated in MIG mode and its geometry is reconciled by MIG Manager, a component deployed by the NVIDIA GPU Operator. A requested node configuration determines which GPU Instances exist and therefore which combinations of compute and memory can be exposed. This responsibility is analogous to node-level resource provisioning: it establishes the capacity available to the cluster, but does not decide which AI application should receive it. The geometries used in the experiments are applied between test cases; the platform does not resize the device assigned to a running Pod.
+
+Immediately above it, the \emph{allocation layer} provides the decoupling introduced by DRA. From the perspective of a Pod, a request can express a requirement such as ``one NVIDIA MIG device satisfying these selectors'', rather than naming a physical instance. The NVIDIA DRA driver publishes the device inventory through ResourceSlices, while DeviceClasses and claim selectors describe the acceptable resources. During scheduling, Kubernetes chooses a node and a compatible device; the node-side DRA component then prepares that device and makes it available to the container. As a result, hardware layout and application manifests can be reasoned about separately, provided that the inventory contains a device satisfying the claim~\cite{kubernetes135dra,nvidia2026dradriverarchitecture}.
+
+These two layers constitute an application-agnostic infrastructure. In this context, \emph{application-agnostic} does not mean that the infrastructure ignores application requirements: those requirements are explicitly carried by claims. It means that the infrastructure does not need to understand model semantics, prompts, or inference-server internals, and is not constructed for a single application. Its contract is expressed in resource properties.
+
+The highest level is the \emph{application layer}. A tenant can deploy a Pod that consumes DRA claims directly, as in the Ollama proof of concept, or use an intermediate framework. Kueue can add queueing and admission control for finite jobs, while KubeRay is an example of a framework that can coordinate distributed Ray applications. These components do not replace the infrastructure layers: they decide when and how application work should run, then rely on Kubernetes and DRA to satisfy the corresponding device requests.
+
+The end-to-end path can therefore be summarized as follows:
+
+\begin{enumerate}
+    \item MIG Manager reconciles the requested MIG geometry and creates the allocatable hardware partitions.
+    \item The NVIDIA DRA driver discovers those partitions and publishes their attributes and capacities to Kubernetes.
+    \item A Pod, either directly or through an intermediate framework, references a ResourceClaim or ResourceClaimTemplate that describes an acceptable device.
+    \item Kubernetes selects a compatible device and node, after which the DRA driver prepares the allocation and exposes it to the container.
+\end{enumerate}
 
 \section{Evaluating MIG and DRA: Proof-of-Concept Progression}
-Questa parte serve a chiarire il perchè dei due PoC. L'obiettivo infatti è non "confondere" il lettore che si trova a scorrerere l'indice e passa da tutte le premesse dell'introduzione a PoC schiantati li a caso. Come sai l'obiettivo degli esperimenti che ho fatto è stato combinare MIG e DRA per capire se potessero portare a dei vanataggi in termini di efficienza (e quindi di gpu utilization), ma anche se possero incrementare le perfomance. Inoltre il motivo del secondo esperimento è stato che al termine del primo mi sono accorto che nessun vantaggio era imputabile a DRA in se e quindi ho provato a crearmi uno scenario in cui cio potesse avvenire
+\label{sec:poc-progression}
+
+The experimental work is organized as two successive proofs of concept rather than as two unrelated deployments. Both use the infrastructure described above, but each isolates a different question about the combination of MIG and DRA.
+
+The first proof of concept investigates \emph{spatial consolidation}. It asks whether several lightweight inference-server instances can use one physical A100 more effectively when each instance is placed on an isolated MIG partition. The comparison separates two effects: the performance loss caused by restricting one server to a smaller device, and the aggregate gain that may be obtained by executing several servers in parallel. DRA supplies each Pod with a MIG device through a claim, but the device remains attached for the Pod's lifetime. In this design DRA is therefore a declarative provisioning mechanism; it does not continuously adapt the allocation to incoming inference requests.
+
+This observation motivates the second proof of concept. A long-running inference server makes only one allocation decision when it starts, so its results cannot demonstrate a performance advantage caused by repeated DRA decisions. The second experiment consequently moves to finite batch workloads managed by Kueue. Devices are released when jobs finish, allowing subsequent jobs to express flexible requirements and to be assigned to whichever compatible partition becomes available. The progression first evaluates whether MIG-based consolidation is beneficial, then evaluates whether DRA's richer allocation semantics can improve the use of a fixed heterogeneous device pool. Neither proof of concept assumes that the combined mechanisms must outperform every static baseline.
 
 \section{Testbed Overview}
 \label{sec:testbed-overview}
 
-\begin{itemize}
-    \item descrizione vm, gpu, cluster, configurazioni gpu operator e dashboard garafana
-\end{itemize}
+Both proofs of concept were executed on the same single-node testbed. Keeping the physical node and GPU software stack fixed reduces environmental variation between the two studies and allows the experiments to reuse the same DRA inventory, monitoring path, and MIG management procedure. Table~\ref{tab:testbed-overview} reports the main components and their role.
+
+\begin{table}[htbp]
+    \centering
+    \small
+    \caption{Experimental testbed configuration.}
+    \label{tab:testbed-overview}
+    \begin{tabularx}{\textwidth}{@{}p{0.20\textwidth}p{0.37\textwidth}X@{}}
+        \toprule
+        \textbf{Component} & \textbf{Configuration} & \textbf{Role in the testbed} \\
+        \midrule
+        Cloud host & Google Cloud virtual machine with an NVIDIA A100 attached through PCIe passthrough & Provides exclusive access to the physical accelerator while retaining a reproducible cloud-hosted environment. \\
+        Accelerator & NVIDIA A100-SXM4-40GB, Ampere architecture, 40~GB HBM2, 108 physical SMs & Executes the inference and batch workloads and supports the MIG layouts evaluated in the proofs of concept. \\
+        Node software & Ubuntu 24.04.4 LTS and containerd 2.1.5-k3s1 & Supplies the Linux host and OCI container runtime recorded for the experimental node. \\
+        Kubernetes & Single-node K3s v1.35.2+k3s1 & Provides the stable DRA API and a controlled scheduler environment; multi-node placement is outside the scope of the testbed. \\
+        GPU management & NVIDIA GPU Operator v26.3.0, MIG strategy \texttt{mixed}, MIG Manager enabled & Installs and reconciles the container GPU stack and applies declared MIG geometries. The NVIDIA driver itself is installed on the host rather than by the Operator. \\
+        Device allocation & NVIDIA DRA Driver for GPUs v25.12.0; conventional NVIDIA device plugin disabled & Publishes GPU and MIG devices as structured resources and prepares the device selected for each claim. \\
+        Observability & \texttt{kube-prometheus-stack}, DCGM Exporter, ServiceMonitor, and a dedicated Grafana dashboard & Scrapes GPU telemetry every five seconds and visualizes utilization, memory, power, temperature, and related health metrics. \\
+        \bottomrule
+    \end{tabularx}
+\end{table}
+
+The physical A100 contains 108 SMs, but MIG organizes its allocatable compute capacity into seven compute slices. On this model each slice contains 14 SMs, so the full-size \texttt{7g.40gb} MIG profile exposes 98 SMs rather than all 108 physical SMs. The A100 40~GB supports profiles ranging from \texttt{1g.5gb} to \texttt{7g.40gb}, including the intermediate \texttt{2g.10gb}, \texttt{3g.20gb}, and \texttt{4g.20gb} profiles described in Table~\ref{tab:a100-mig-profiles}; selected driver releases also expose specialized \texttt{1g} profiles. The experiments use only \texttt{1g.5gb}, \texttt{3g.20gb}, and \texttt{7g.40gb}. This distinction between physical and MIG-addressable SMs is important when interpreting a ``full GPU'' baseline~\cite{nvidia2026gpuperformance,nvidia2026migconcepts}.
+
+The Operator configuration deliberately disables the conventional NVIDIA device plugin so that GPU allocation follows the DRA path. It keeps the NVIDIA Container Toolkit, GPU Feature Discovery, MIG Manager, and DCGM Exporter enabled. MIG Manager is allowed to reboot the node when a mode transition requires it, while the \texttt{mixed} strategy permits heterogeneous profile names to be exposed. The standalone NVIDIA DRA driver is scheduled on the GPU node and uses the host-installed driver through \texttt{nvidiaDriverRoot=/}. This arrangement matches the separation introduced in Section~\ref{chap:architecture-overview}: the Operator manages node capabilities, whereas the DRA driver implements claim-based allocation.
+
+For observability, DCGM Exporter samples GPU metrics at a five-second interval and exposes them through a Prometheus Operator ServiceMonitor. The \texttt{kube-prometheus-stack} installation stores the resulting time series, and Grafana loads a dedicated dashboard for both full-GPU and MIG views. These measurements complement the application-level timings emitted by the benchmarks. Because the cluster contains one worker/control-plane node and one physical GPU, the experiments evaluate allocation and consolidation on that node; they do not test cross-node scheduling, high availability, or multi-GPU communication.
 
 \section{PoC 1: Parallel Ollama Instances}
 \label{sec:multi-ollama}
 
+The first proof of concept deploys TinyLlama behind one Kubernetes Service using a variable number of independent Ollama inference-server replicas. Its purpose is to determine whether parallel isolated servers can transform capacity left unused by one lightweight workload into useful aggregate throughput. The experiment is intentionally incremental: it first measures one server on the largest available device, then distinguishes the effects of sharing, restricting, and spatially partitioning that resource.
+
 \subsection{Targeted Challenges}
 \label{subsec:multi-ollama-problem}
 
-\begin{itemize}
-    \item modelli piccoli non saturano la gpu
-    \item Head-of-Line Blocking
-\end{itemize}
+The proof of concept targets two related limitations of a single inference-server deployment:
+
+\begin{description}
+    \item[GPU underutilization.] A small or lightweight model may fit comfortably in accelerator memory while failing to keep all SMs active, even when the service is subjected to sustained demand. Assigning an entire high-end GPU to that server then reserves compute and memory capacity that cannot be used by another tenant. TinyLlama, a 1.1-billion-parameter language model, provides a compact LLM workload with which to observe this mismatch~\cite{zhang2024tinyllama}.
+    \item[Head-of-line queueing.] An inference server has finite request concurrency. During a spike, requests that exceed the work the server can process concurrently remain queued behind earlier requests. Without a mechanism such as effective dynamic batching or additional serving replicas, trailing requests wait for capacity to become available, increasing latency even when the physical GPU still contains exploitable parallel resources. Here, \emph{head-of-line blocking} refers to this application-level queueing effect rather than to a transport-protocol property.
+\end{description}
+
+The two problems suggest a common direction: deploy more than one serving process so that requests can be handled by independent workers, while preventing those workers from interfering without control. Merely creating additional processes on the same device tests concurrency but does not provide resource or fault isolation. MIG makes it possible to compare that temporal sharing arrangement with spatially isolated replicas.
 
 \subsection{System Design}
 \label{subsec:multi-ollama-architecture}
 
+The system consists of a configurable MIG hardware view, a DRA allocation path, one or more Ollama Pods, a single Kubernetes Service, and an external load generator. Table~\ref{tab:ollama-gpu-views} represents the three device sizes used to construct the four experimental cases. The term \emph{full GPU} is used for readability to denote the full-size \texttt{7g.40gb} MIG device; the baseline still uses MIG mode so that every case follows the same DRA resource model.
+
+\begin{table}[htbp]
+    \centering
+    \small
+    \caption{MIG device views used by the Ollama proof of concept.}
+    \label{tab:ollama-gpu-views}
+    \begin{tabularx}{\textwidth}{@{}p{0.20\textwidth}p{0.20\textwidth}p{0.16\textwidth}p{0.15\textwidth}X@{}}
+        \toprule
+        \textbf{Experimental view} & \textbf{MIG device(s) used} & \textbf{SMs per device} & \textbf{Memory per device} & \textbf{Purpose} \\
+        \midrule
+        Full-size & $1 \times$ \texttt{7g.40gb} & 98 & 40~GB & Whole-resource baseline and shared-device comparison. \\
+        Medium & $1 \times$ \texttt{3g.20gb} & 42 & 20~GB & Measures the effect of restricting one server to a fraction of the accelerator. \\
+        Small partitions & $7 \times$ \texttt{1g.5gb} & 14 & 5~GB & Provides one isolated device for each of seven parallel servers. \\
+        \bottomrule
+    \end{tabularx}
+\end{table}
+
+The MIG configuration is selected at node level and applied by MIG Manager before a test case begins. The medium experiment consumes one \texttt{3g.20gb} device; any other capacity present in the selected node geometry is not part of that arm. For the final case, seven \texttt{1g.5gb} instances make all seven MIG compute slices independently allocatable. No partition is created or resized in response to an individual inference request.
+
+At the allocation layer, the proof of concept intentionally uses a generic request. The ResourceClaimTemplate named \texttt{whatever-mig} requests exactly one device from the \texttt{mig.nvidia.com} DeviceClass and applies only the following CEL condition:
+
+\begin{quote}
+\texttt{device.attributes["gpu.nvidia.com"].type == "mig"}
+\end{quote}
+
+The claim does not select a profile, memory size, or number of SMs. Consequently, the node's pre-applied MIG geometry determines which kind of device can satisfy it. This keeps application manifests independent of a profile name, but it is safe only when the experiment controls the available inventory. A production cluster exposing several acceptable MIG profiles would normally add selectors or use more specific DeviceClasses to avoid an unintended allocation.
+
+The application is defined by the \texttt{ollama-mig} Deployment. Each replica runs the \texttt{ollama/ollama:0.12.11-rc1} image and listens on port 11434. An init container starts a temporary Ollama server and pulls TinyLlama into an \texttt{emptyDir} volume; the main container subsequently reuses that per-Pod model directory. Replicas therefore have distinct Ollama processes and local model state rather than sharing one server process.
+
+All replicas carry the same \texttt{app: ollama-mig} label and are selected by the \texttt{ollama-nodeport} Service. The Service exposes node port 31134 and constitutes the single client entry point. With multiple replicas, Kubernetes distributes new connections among the ready Pod endpoints, so it provides the load-distribution function required by the experiment. It is not an inference-aware router: it does not inspect queue length, prompt complexity, or GPU utilization when choosing an endpoint.
+
+The client-side \texttt{load-test.sh} script sends non-streaming requests to the Service's \texttt{/api/generate} endpoint using a fixed prompt and the TinyLlama model. It exposes three workload controls:
+
 \begin{itemize}
-    \item descrizione claim templates, deploy ollama, modello usato, load generator ecc
+    \item \textbf{Total requests} determines how many requests are issued during a run.
+    \item \textbf{Concurrent requests} sets the maximum number of requests kept in flight. When the limit is reached, the script waits for one request to finish before launching the next. It therefore controls concurrency and pressure on the service, but is not itself a fixed requests-per-second rate; the achieved rate also depends on response latency.
+    \item \textbf{Target output tokens} is passed to Ollama as \texttt{num\_predict}. It provides a common requested generation length and changes the amount of decoding work. Since generation can terminate early, the script records the actual \texttt{eval\_count} returned by Ollama and uses actual generated tokens in the throughput calculation.
 \end{itemize}
+
+Each HTTP call uses a new connection, which allows the Kubernetes Service to select an endpoint again for every request. The response fields and client timestamps are stored as JSON Lines. The evaluation script then derives per-request latency, generation rate, wall-clock duration, actual aggregate throughput in tokens per second, and average and 95th-percentile latency. DCGM-derived GPU measurements are collected independently through Prometheus.
 
 \subsection{Testing Methodology}
 \label{subsec:multi-ollama-methodology}
 
-\begin{itemize}
-    \item baseline: 1 ollama su intera gpu
-    \item time-sharing
-    \item restringere l'istanza
-    \item istanze multiple
-\end{itemize}
+Four test cases progressively modify the number of Ollama processes and their device assignment. The model, prompt, client entry point, physical GPU, and request-generation procedure remain unchanged. The independent variables are the MIG device view, the number of server replicas, client concurrency, and requested output length. Table~\ref{tab:ollama-test-cases} summarizes the cases and, importantly, the DRA object used to bind Pods to devices.
+
+\begin{table}[htbp]
+    \centering
+    \small
+    \caption{Ollama proof-of-concept test cases.}
+    \label{tab:ollama-test-cases}
+    \begin{tabularx}{\textwidth}{@{}p{0.16\textwidth}p{0.18\textwidth}p{0.10\textwidth}p{0.24\textwidth}X@{}}
+        \toprule
+        \textbf{Case} & \textbf{GPU assignment} & \textbf{Ollama replicas} & \textbf{Deployment and claim model} & \textbf{Experimental purpose} \\
+        \midrule
+        Baseline & One \texttt{7g.40gb} device & 1 & \texttt{deploy-ollama.yaml}; one claim generated from \texttt{whatever-mig} & Characterize a lightweight workload given the full-size resource. \\
+        Time-sharing & One shared \texttt{7g.40gb} device & 7 & Shared deployment; all Pods reference one ResourceClaim & Evaluate multi-server concurrency without hardware partition isolation. \\
+        Restricted instance & One \texttt{3g.20gb} device & 1 & \texttt{deploy-ollama.yaml}; one claim generated from the template & Isolate the per-server cost of reducing available compute and memory. \\
+        Multiple instances & Seven distinct \texttt{1g.5gb} devices & 7 & \texttt{deploy-ollama.yaml}; one template-derived claim per Pod & Evaluate isolated multi-tenant consolidation behind one endpoint. \\
+        \bottomrule
+    \end{tabularx}
+\end{table}
+
+\paragraph{Baseline.}
+The baseline runs one Ollama replica on the single \texttt{7g.40gb} device. The Deployment in \texttt{deploy-ollama.yaml} references the \texttt{whatever-mig} ResourceClaimTemplate; Kubernetes creates one claim for the Pod, and DRA allocates the only compatible full-size MIG device. This case establishes how much throughput and utilization one TinyLlama server can obtain when resource capacity is not deliberately constrained. It is designed to expose underutilization rather than to represent an optimized serving configuration.
+
+\paragraph{Time-sharing.}
+The second case keeps the same \texttt{7g.40gb} device but increases the Deployment to seven Ollama replicas. The manifest \texttt{deploy-ollama-shared.yaml} defines one ordinary ResourceClaim and makes every Pod reference that same claim through \texttt{resourceClaimName}. The seven CUDA contexts therefore use one assigned device and are multiplexed over it. This differs from advertising seven independently allocatable devices: DRA performs one device allocation, while sharing arises because several consumers use the resulting claim. The case approximates the desired multi-tenant service topology with the simplest sharing arrangement, but offers no hardware partition boundary among tenants.
+
+\paragraph{Restricted instance.}
+The third case returns to one Ollama replica and assigns it one \texttt{3g.20gb} device. It again uses \texttt{deploy-ollama.yaml} and a claim generated from the ResourceClaimTemplate. The node geometry makes the medium device available, so the generic MIG selector resolves to that resource. Comparing this case with the baseline measures the microscopic cost of shrinking the accelerator independently of any gain from multiple replicas.
+
+This case tests a central working assumption: a sufficiently lightweight model should exhibit little or no performance degradation when restricted to a fraction of a large GPU. The assumption is not guaranteed merely because the model is small. Even TinyLlama performs autoregressive decoding whose rate can depend on compute capacity and memory behaviour, so a \texttt{3g.20gb} or \texttt{1g.5gb} device may reduce the throughput of an individual server. The experiment therefore measures the trade-off instead of treating negligible degradation as a premise already demonstrated.
+
+\paragraph{Multiple instances.}
+The final case applies the seven-device \texttt{1g.5gb} layout and deploys seven Ollama replicas behind the same NodePort Service. Each Pod uses \texttt{deploy-ollama.yaml}, whose reference to a ResourceClaimTemplate causes Kubernetes to create a distinct claim for that Pod. Since every claim requests one device and seven small devices are available, the NVIDIA DRA driver can assign a different isolated MIG instance to every replica. New client connections are distributed across the seven endpoints, while each server remains bounded to its partition for its lifetime.
+
+The comparison between the restricted and multiple-instance cases separates the two sides of MIG right-sizing. Restricting one server may reduce its individual rate; replicating that server over otherwise unused partitions may increase aggregate throughput and reduce queueing. A successful final configuration therefore requires the parallelism benefit to compensate for the per-instance restriction cost. Throughout this proof of concept, DRA determines the initial Pod-to-device binding and releases it when the Pod is removed; it does not resize or migrate a running Ollama instance.
 
 \subsection{Results and Evaluation}
 \label{subsec:multi-ollama-results}
