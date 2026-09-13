@@ -34,6 +34,7 @@ NVIDIA vGPU software operates at the virtualization layer. A vGPU Manager in the
 
 On compatible hardware and hypervisors, vGPU can be also backed by MIG. A one-to-one MIG-backed vGPU gives a VM exclusive access to one GPU Instance, combining VM isolation and management with MIG's spatial partition. Such configurations are therefore conceptually related to the direct exposure of bare-metal or MIG GPU devices to Linux containers, even though they differ operationally. Technical documentation highlights the same trade-off: vGPU time-slicing offers flexibility and allows for the utilization of idle cycles, whereas MIG technology prioritizes low-latency service predictability and error isolation.~\cite{nvidia2020migvcs}.
 
+\paragraph{The best choice.}
 Ultimately, no mechanism dominates all scenarios:
 \begin{itemize}
     \item Time-slicing maximizes simplicity and density
