@@ -93,7 +93,7 @@ The proof of concept targets two related limitations of a single inference-serve
 
 \begin{description}
     \item[GPU underutilization.] A small or lightweight model may fit comfortably in accelerator memory while failing to keep all SMs active, even when the service is subjected to sustained demand. Assigning an entire high-end GPU to that server then reserves compute and memory capacity that cannot be used by another tenant. TinyLlama, a 1.1-billion-parameter language model, provides a compact LLM workload with which to observe this mismatch~\cite{zhang2024tinyllama}.
-    \item[Head-of-line queueing.] An inference server has finite request concurrency. During a spike, requests that exceed the work the server can process concurrently remain queued behind earlier requests. Without a mechanism such as effective dynamic batching or additional serving replicas, trailing requests wait for capacity to become available, increasing latency even when the physical GPU still contains exploitable parallel resources. Here, \emph{head-of-line blocking} refers to this application-level queueing effect rather than to a transport-protocol property.
+    \item[Head-of-line queueing.] An inference server has finite request concurrency. During a spike, requests that exceed the work the server can process concurrently remain queued behind earlier requests. In particular, Ollama can manage only one request per time. Without a mechanism such as effective dynamic batching or additional serving replicas, trailing requests wait for capacity to become available, increasing latency even when the physical GPU still contains exploitable parallel resources. Here, \emph{head-of-line blocking} refers to this application-level queueing effect rather than to a transport-protocol property.
 \end{description}
 
 The two problems suggest a common direction: deploy more than one serving process so that requests can be handled by independent workers, while preventing those workers from interfering without control. Merely creating additional processes on the same device tests concurrency but does not provide resource or fault isolation. MIG makes it possible to compare that temporal sharing arrangement with spatially isolated replicas.
@@ -101,7 +101,14 @@ The two problems suggest a common direction: deploy more than one serving proces
 \subsection{System Design}
 \label{subsec:multi-ollama-architecture}
 
-The system consists of a configurable MIG hardware view, a DRA allocation path, one or more Ollama Pods, a single Kubernetes Service, and an external load generator. Table~\ref{tab:ollama-gpu-views} represents the three device sizes used to construct the four experimental cases. The term \emph{full GPU} is used for readability to denote the full-size \texttt{7g.40gb} MIG device; the baseline still uses MIG mode so that every case follows the same DRA resource model.
+The system consists of a configurable MIG hardware view, a DRA allocation path, one or more Ollama Pods, a single Kubernetes Service, and an external load generator. Table~\ref{tab:ollama-gpu-views} represents the three device sizes used to construct the four experimental cases. The term \emph{full GPU} is used for readability to denote the full-size \texttt{7g.40gb} MIG device, actually the baseline still uses MIG mode so that every case follows the same DRA resource model.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.8\textwidth]{images/Ollama_testbed.drawio.png}
+    \caption{Ollama Experiment System Design}
+    \label{fig:esempio}
+\end{figure}
 
 \begin{table}[htbp]
     \centering
@@ -119,9 +126,7 @@ The system consists of a configurable MIG hardware view, a DRA allocation path, 
     \end{tabularx}
 \end{table}
 
-The MIG configuration is selected at node level and applied by MIG Manager before a test case begins. The medium experiment consumes one \texttt{3g.20gb} device; any other capacity present in the selected node geometry is not part of that arm. For the final case, seven \texttt{1g.5gb} instances make all seven MIG compute slices independently allocatable. No partition is created or resized in response to an individual inference request.
-
-At the allocation layer, the proof of concept intentionally uses a generic request. The ResourceClaimTemplate named \texttt{whatever-mig} requests exactly one device from the \texttt{mig.nvidia.com} DeviceClass and applies only the following CEL condition:
+The MIG configuration is selected at node level and applied by MIG Manager before a test case begins. At the allocation layer, the proof of concept intentionally uses a generic request. The ResourceClaimTemplate named \texttt{whatever-mig} requests exactly one device from the \texttt{mig.nvidia.com} DeviceClass and applies only the following CEL condition:
 
 \begin{quote}
 \texttt{device.attributes["gpu.nvidia.com"].type == "mig"}
@@ -129,24 +134,23 @@ At the allocation layer, the proof of concept intentionally uses a generic reque
 
 The claim does not select a profile, memory size, or number of SMs. Consequently, the node's pre-applied MIG geometry determines which kind of device can satisfy it. This keeps application manifests independent of a profile name, but it is safe only when the experiment controls the available inventory. A production cluster exposing several acceptable MIG profiles would normally add selectors or use more specific DeviceClasses to avoid an unintended allocation.
 
-The application is defined by the \texttt{ollama-mig} Deployment. Each replica runs the \texttt{ollama/ollama:0.12.11-rc1} image and listens on port 11434. An init container starts a temporary Ollama server and pulls TinyLlama into an \texttt{emptyDir} volume; the main container subsequently reuses that per-Pod model directory. Replicas therefore have distinct Ollama processes and local model state rather than sharing one server process.
+The application is defined by the \texttt{ollama-mig} Deployment and each replica runs the \texttt{ollama/ollama:0.12.11-rc1} image. An init container starts a temporary Ollama server and pulls TinyLlama into an \texttt{emptyDir} volume, then the main container subsequently reuses that per-Pod model directory. Replicas therefore have distinct Ollama processes and local model state rather than sharing one server process.
 
-All replicas carry the same \texttt{app: ollama-mig} label and are selected by the \texttt{ollama-nodeport} Service. The Service exposes node port 31134 and constitutes the single client entry point. With multiple replicas, Kubernetes distributes new connections among the ready Pod endpoints, so it provides the load-distribution function required by the experiment. It is not an inference-aware router: it does not inspect queue length, prompt complexity, or GPU utilization when choosing an endpoint.
+The Service exposes a node port and constitutes the single client entry point. With multiple replicas, Kubernetes distributes new connections among the ready Pod endpoints, so it provides the load-distribution function required by the experiment. It is not an inference-aware router: it does not inspect queue length, prompt complexity, or GPU utilization when choosing an endpoint.
 
-The client-side \texttt{load-test.sh} script sends non-streaming requests to the Service's \texttt{/api/generate} endpoint using a fixed prompt and the TinyLlama model. It exposes three workload controls:
+The client-side \texttt{load-test.sh} script sends non-streaming requests to the Service's \texttt{/api/generate} endpoint using a fixed prompt and the TinyLlama model. It exposes two workload controls:
 
 \begin{itemize}
-    \item \textbf{Total requests} determines how many requests are issued during a run.
-    \item \textbf{Concurrent requests} sets the maximum number of requests kept in flight. When the limit is reached, the script waits for one request to finish before launching the next. It therefore controls concurrency and pressure on the service, but is not itself a fixed requests-per-second rate; the achieved rate also depends on response latency.
-    \item \textbf{Target output tokens} is passed to Ollama as \texttt{num\_predict}. It provides a common requested generation length and changes the amount of decoding work. Since generation can terminate early, the script records the actual \texttt{eval\_count} returned by Ollama and uses actual generated tokens in the throughput calculation.
+    \item \textbf{Concurrent requests} sets the maximum number of requests kept in flight, it therefore controls concurrency and pressure on the service, but is not itself a fixed requests-per-second rate.
+    \item \textbf{Target output tokens} is passed to Ollama as \texttt{num\_predict}. It provides a common requested generation length and changes the amount of decoding work. Adjusting this setting so as not to exceed the model's maximum capacity is useful for fixing the number of output tokens and consequently the direct load on the GPU. This ensures that the prefill and decode phases always involve the same number of tokens, making it possible to normalize the resource usage of all requests within a single test.
 \end{itemize}
 
-Each HTTP call uses a new connection, which allows the Kubernetes Service to select an endpoint again for every request. The response fields and client timestamps are stored as JSON Lines. The evaluation script then derives per-request latency, generation rate, wall-clock duration, actual aggregate throughput in tokens per second, and average and 95th-percentile latency. DCGM-derived GPU measurements are collected independently through Prometheus.
+Each HTTP call uses a new connection, which allows the Kubernetes Service to select an endpoint again for every request. The response fields and client timestamps are stored as JSON Lines. The evaluation script then derives per-request latency, generation rate, wall-clock duration, actual aggregate throughput in tokens per second, and average latency. DCGM-derived GPU measurements are collected independently through Prometheus.
 
 \subsection{Testing Methodology}
 \label{subsec:multi-ollama-methodology}
 
-Four test cases progressively modify the number of Ollama processes and their device assignment. The model, prompt, client entry point, physical GPU, and request-generation procedure remain unchanged. The independent variables are the MIG device view, the number of server replicas, client concurrency, and requested output length. Table~\ref{tab:ollama-test-cases} summarizes the cases and, importantly, the DRA object used to bind Pods to devices.
+Four test cases progressively modify the number of Ollama processes and their device assignment, all the rest remain unchanged. For statistical purposes the independent variables are the MIG device configuration, the number of server replicas and client concurrency. The required output length, on the other hand, was kept fixed at 25 tokens, as this proved to be the optimal operating window for the created architecture to deliver the best advantages.
 
 \begin{table}[htbp]
     \centering
@@ -166,20 +170,18 @@ Four test cases progressively modify the number of Ollama processes and their de
 \end{table}
 
 \paragraph{Baseline.}
-The baseline runs one Ollama replica on the single \texttt{7g.40gb} device. The Deployment in \texttt{deploy-ollama.yaml} references the \texttt{whatever-mig} ResourceClaimTemplate; Kubernetes creates one claim for the Pod, and DRA allocates the only compatible full-size MIG device. This case establishes how much throughput and utilization one TinyLlama server can obtain when resource capacity is not deliberately constrained. It is designed to expose underutilization rather than to represent an optimized serving configuration.
+The baseline runs one Ollama replica on the single \texttt{7g.40gb} device. This case establishes how much throughput and utilization one TinyLlama server can obtain when resource capacity is not deliberately constrained. It is mostly designed to expose underutilization rather than to represent an optimized serving configuration.
 
 \paragraph{Time-sharing.}
 The second case keeps the same \texttt{7g.40gb} device but increases the Deployment to seven Ollama replicas. The manifest \texttt{deploy-ollama-shared.yaml} defines one ordinary ResourceClaim and makes every Pod reference that same claim through \texttt{resourceClaimName}. The seven CUDA contexts therefore use one assigned device and are multiplexed over it. This differs from advertising seven independently allocatable devices: DRA performs one device allocation, while sharing arises because several consumers use the resulting claim. The case approximates the desired multi-tenant service topology with the simplest sharing arrangement, but offers no hardware partition boundary among tenants.
 
 \paragraph{Restricted instance.}
-The third case returns to one Ollama replica and assigns it one \texttt{3g.20gb} device. It again uses \texttt{deploy-ollama.yaml} and a claim generated from the ResourceClaimTemplate. The node geometry makes the medium device available, so the generic MIG selector resolves to that resource. Comparing this case with the baseline measures the microscopic cost of shrinking the accelerator independently of any gain from multiple replicas.
+The third case returns to one Ollama replica and assigns it one \texttt{3g.20gb} device. It again uses \texttt{deploy-ollama.yaml} and a claim generated from the ResourceClaimTemplate. Comparing this case with the baseline measures the microscopic cost of shrinking the accelerator independently of any gain from multiple replicas.
 
 This case tests a central working assumption: a sufficiently lightweight model should exhibit little or no performance degradation when restricted to a fraction of a large GPU. The assumption is not guaranteed merely because the model is small. Even TinyLlama performs autoregressive decoding whose rate can depend on compute capacity and memory behaviour, so a \texttt{3g.20gb} or \texttt{1g.5gb} device may reduce the throughput of an individual server. The experiment therefore measures the trade-off instead of treating negligible degradation as a premise already demonstrated.
 
 \paragraph{Multiple instances.}
 The final case applies the seven-device \texttt{1g.5gb} layout and deploys seven Ollama replicas behind the same NodePort Service. Each Pod uses \texttt{deploy-ollama.yaml}, whose reference to a ResourceClaimTemplate causes Kubernetes to create a distinct claim for that Pod. Since every claim requests one device and seven small devices are available, the NVIDIA DRA driver can assign a different isolated MIG instance to every replica. New client connections are distributed across the seven endpoints, while each server remains bounded to its partition for its lifetime.
-
-The comparison between the restricted and multiple-instance cases separates the two sides of MIG right-sizing. Restricting one server may reduce its individual rate; replicating that server over otherwise unused partitions may increase aggregate throughput and reduce queueing. A successful final configuration therefore requires the parallelism benefit to compensate for the per-instance restriction cost. Throughout this proof of concept, DRA determines the initial Pod-to-device binding and releases it when the Pod is removed; it does not resize or migrate a running Ollama instance.
 
 \subsection{Results and Evaluation}
 \label{subsec:multi-ollama-results}
