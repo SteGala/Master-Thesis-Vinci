@@ -1,54 +1,5 @@
-\chapter{Implementation}
+\chapter{Experimental Studies}
 \label{chap:implementation}
-
-\section{Architecture Overview}
-\label{chap:architecture-overview}
-
-The result of combining \textbf{MIG} and \textbf{DRA} is a layered architecture that separates the physical organization of the accelerator from the way applications request it. This separation is particularly important for GPUs: although MIG determines which devices physically exist, a tenant should not need to identify a particular GPU or MIG UUID in its Pod specification. Instead, the application declares the characteristics of the resource it requires, while the infrastructure selects and prepares a compatible device.
-
-Table~\ref{tab:logical-architecture} summarizes the resulting logical architecture. The hardware and allocation layers jointly form the \emph{infrastructure layer}; the application layer consumes the capabilities exposed by that infrastructure.
-
-\begin{table}[htbp]
-    \centering
-    \small
-    \caption{Logical layers of the implemented GPU platform.}
-    \label{tab:logical-architecture}
-    \begin{tabularx}{\textwidth}{@{}p{0.18\textwidth}p{0.17\textwidth}X p{0.25\textwidth}@{}}
-        \toprule
-        \textbf{Macro-layer} & \textbf{Layer} & \textbf{Responsibility} & \textbf{Main components} \\
-        \midrule
-        Application & Application & Runs tenant workloads directly or through higher-level frameworks that coordinate their execution. & Tenant Pods, Ollama, Kueue, and potentially frameworks such as KubeRay. \\
-        Infrastructure & Allocation & Translates declarative device requirements into the allocation and preparation of a compatible resource for a Pod. & Kubernetes scheduler, ResourceClaims, ResourceClaimTemplates, DeviceClasses, ResourceSlices, and the NVIDIA DRA driver. \\
-        Infrastructure & Hardware & Controls the physical accelerator and the set of GPU devices that can be allocated by the upper layer. & NVIDIA A100, MIG, NVIDIA GPU Operator, and MIG Manager. \\
-        \bottomrule
-    \end{tabularx}
-\end{table}
-
-At the bottom, the \emph{hardware layer} manages the accelerator as a node resource, this means that a requested node configuration determines which GPU Instances exist and therefore which combinations of compute and memory can be exposed. This responsibility is analogous to node-level resource provisioning: it establishes the capacity available to the cluster, but does not decide which AI application should receive it.
-
-Immediately above it, the \emph{allocation layer} provides the decoupling introduced by DRA. From the perspective of a Pod, a request can express a requirement such as ``one NVIDIA MIG device satisfying these selectors'', rather than naming a physical instance. The NVIDIA DRA driver publishes the device inventory through ResourceSlices, while DeviceClasses and claim selectors describe the acceptable resources. During scheduling, Kubernetes chooses a node and a compatible device, then the node-side DRA component prepares that device and makes it available to the container. As a result, hardware layout and application manifests can be reasoned about separately, provided that the inventory contains a device satisfying the claim~\cite{kubernetes135dra,nvidia2026dradriverarchitecture}.
-
-These two layers constitute an \textbf{application-agnostic} infrastructure. In this context, \emph{application-agnostic} does not mean that the infrastructure ignores application requirements: those requirements are explicitly carried by claims. It means that the infrastructure does not need to understand model semantics, prompts, or inference-server internals, and is not constructed for a single application. Its contract is expressed in resource properties.
-
-The highest level is the \emph{application layer}. A tenant can deploy a Pod that consumes DRA claims directly or use an intermediate framework. For example Kueue can add queueing and admission control for finite jobs or KubeRay can coordinate distributed Ray applications. These components do not replace the infrastructure layers: they decide when and how application work should run, then rely on Kubernetes and DRA to satisfy the corresponding device requests.
-
-\paragraph{Lifecycle.} The end-to-end path can therefore be summarized as follows:
-
-\begin{enumerate}
-    \item MIG Manager reconciles the requested MIG geometry and creates the allocatable hardware partitions.
-    \item The NVIDIA DRA driver discovers those partitions and publishes their attributes and capacities to Kubernetes.
-    \item A Pod, either directly or through an intermediate framework, references a ResourceClaim or ResourceClaimTemplate that describes an acceptable device.
-    \item Kubernetes selects a compatible device and node, after which the DRA driver prepares the allocation and exposes it to the container.
-\end{enumerate}
-
-\section{Evaluating MIG and DRA: Proof-of-Concept Progression}
-\label{sec:poc-progression}
-
-The experimental work is organized as two successive proofs of concept rather than as two unrelated deployments. Both use the infrastructure described above, but each isolates a different question about the combination of MIG and DRA.
-
-The first proof of concept investigates \emph{spatial consolidation}. It asks whether several lightweight inference-server instances can use one physical A100 more effectively when each instance is placed on an isolated MIG partition. The comparison separates two effects: the performance loss caused by restricting one server to a smaller device, and the aggregate gain that may be obtained by executing several servers in parallel. DRA supplies each Pod with a MIG device through a claim, but the device remains attached for the Pod's lifetime. In this design DRA is therefore a declarative provisioning mechanism: it does not continuously adapt the allocation to incoming inference requests.
-
-This observation motivates the second proof of concept. A long-running inference server makes only one allocation decision when it starts, so its results cannot demonstrate a performance advantage caused by repeated DRA decisions. The second experiment consequently moves to finite batch workloads managed by Kueue. Devices are released when jobs finish, allowing subsequent jobs to express flexible requirements and to be assigned to whichever compatible partition becomes available. The progression first evaluates whether MIG-based consolidation is beneficial, then evaluates whether DRA's richer allocation semantics can improve the use of a fixed heterogeneous device pool.
 
 \section{Testbed Overview}
 \label{sec:testbed-overview}
@@ -195,23 +146,6 @@ The final case applies the seven-device \texttt{1g.5gb} layout and deploys seven
 \section{PoC 2: Kueue-Managed Batch Workloads}
 \label{sec:kueue-use-case}
 
-\subsection{From Workload Priority to GPU-Aware Service Classes}
-\label{subsec:kueue-problem}
-
-\begin{itemize}
-    \item la natura dei job si sposa bene con le richieste dinamiche DRA
-    \item priorità garantisce precedenza di allocazione, ma non tempo di esecuzione
-    \item Idea: Service Class
-\end{itemize}
-
-\subsection{Kueue Background}
-\label{subsec:kueue-background}
-
-\begin{itemize}
-    \item cosa è e a cosa serve kueue
-    \item gestione delle priorità in kueue
-\end{itemize}
-
 \subsection{System Design}
 \label{subsec:kueue-architecture}
 
@@ -223,6 +157,9 @@ The final case applies the seven-device \texttt{1g.5gb} layout and deploys seven
     \item baseline mix
     \item d-flex
 \end{itemize}
+
+\subsection{Testing Methodology}
+\label{subsec:kueue-methodology}
 
 \subsection{Results and Evaluation}
 \label{subsec:kueue-results}
