@@ -45,12 +45,12 @@ Ultimately, no mechanism dominates all scenarios:
 \end{itemize}
 Hybrid configurations are also possible, such as running MPS or CUDA streams within a MIG instance, or exposing a MIG-backed vGPU to a virtual machine. The selection must therefore follow the required unit of allocation, workload trust, memory footprint, latency sensitivity, and acceptable operational complexity.
 
-\begin{table}[htbp]
+\begin{table}[!p]
     \centering
     \small
     \caption{Comparison of representative NVIDIA GPU sharing mechanisms.}
     \label{tab:gpu-sharing-comparison}
-    \begin{tabularx}{\textwidth}{@{}p{0.13\textwidth}X X p{0.22\textwidth}@{}}
+    \begin{tabularx}{\textwidth}{p{0.15\textwidth}X X X}
         \toprule
         \textbf{Mechanism} & \textbf{Advantages} & \textbf{Limitations} & \textbf{Suitable scenarios} \\
         \midrule

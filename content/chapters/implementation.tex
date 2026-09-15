@@ -11,12 +11,12 @@ Both proofs of concept were executed on the same single-node testbed. Keeping th
     \small
     \caption{Experimental testbed configuration.}
     \label{tab:testbed-overview}
-    \begin{tabularx}{\textwidth}{@{}p{0.20\textwidth}p{0.37\textwidth}X@{}}
+    \begin{tabularx}{\textwidth}{p{0.22\textwidth}XX}
         \toprule
         \textbf{Component} & \textbf{Configuration} & \textbf{Role in the testbed} \\
         \midrule
-        Cloud host & Google Cloud virtual machine with an NVIDIA A100 attached through PCIe passthrough & Provides exclusive access to the physical accelerator while retaining a reproducible cloud-hosted environment. \\
-        Accelerator & NVIDIA A100-SXM4-40GB, Ampere architecture, 40~GB HBM2, 108 physical SMs & Executes the inference and batch workloads and supports the MIG layouts evaluated in the proofs of concept. \\
+        Cloud host & Google Cloud virtual machine a2-highgpu-1g & Provides exclusive access to the physical accelerator while retaining a reproducible cloud-hosted environment. \\
+        Accelerator & NVIDIA A100-SXM4-40GB, Ampere architecture, 40~GB HBM2, 108 physical SMs, attached in passthrough & Executes the inference and batch workloads and supports the MIG layouts evaluated in the proofs of concept. \\
         Node software & Ubuntu 24.04.4 LTS and containerd 2.1.5-k3s1 & Supplies the Linux host and OCI container runtime recorded for the experimental node. \\
         Kubernetes & Single-node K3s v1.35.2+k3s1 & Provides the stable DRA API and a controlled scheduler environment. \\
         GPU management & NVIDIA GPU Operator v26.3.0, MIG strategy \texttt{mixed}, MIG Manager enabled & Installs and reconciles the container GPU stack and applies declared MIG geometries. \\
@@ -108,17 +108,18 @@ Four test cases progressively modify the number of Ollama processes and their de
     \small
     \caption{Ollama proof-of-concept test cases.}
     \label{tab:ollama-test-cases}
-    \begin{tabularx}{\textwidth}{@{}p{0.16\textwidth}p{0.18\textwidth}p{0.10\textwidth}p{0.24\textwidth}X@{}}
+    \begin{tabularx}{\textwidth}{@{}p{0.12\textwidth}p{0.15\textwidth}p{0.11\textwidth}XX@{}}
         \toprule
-        \textbf{Case} & \textbf{GPU assignment} & \textbf{Ollama replicas} & \textbf{Deployment and claim model} & \textbf{Experimental purpose} \\
+        \textbf{Case} & \textbf{GPUs} & \textbf{Replicas} & \textbf{Claim model} & \textbf{Purpose} \\
         \midrule
-        Baseline & One \texttt{7g.40gb} device & 1 & \texttt{deploy-ollama.yaml}; one claim generated from \texttt{whatever-mig} & Characterize a lightweight workload given the full-size resource. \\
-        Time-sharing & One shared \texttt{7g.40gb} device & 7 & Shared deployment; all Pods reference one ResourceClaim & Evaluate multi-server concurrency without hardware partition isolation. \\
-        Restricted instance & One \texttt{3g.20gb} device & 1 & \texttt{deploy-ollama.yaml}; one claim generated from the template & Isolate the per-server cost of reducing available compute and memory. \\
-        Multiple instances & Seven distinct \texttt{1g.5gb} devices & 7 & \texttt{deploy-ollama.yaml}; one template-derived claim per Pod & Evaluate isolated multi-tenant consolidation behind one endpoint. \\
+        Baseline & 1 x \texttt{7g.40gb} & 1 & One claim generated from \texttt{whatever-mig} & Characterize a lightweight workload given the full-size resource. \\
+        Time-sharing & 1 x \texttt{7g.40gb}  & 7 & Shared deployment: all Pods reference one ResourceClaim & Evaluate multi-server concurrency without hardware partition isolation. \\
+        Restricted instance & 1 x \texttt{3g.20gb} & 1 & One claim generated from \texttt{whatever-mig} & Isolate the per-server cost of reducing available compute and memory. \\
+        Multiple instances & 7 x \texttt{1g.5gb} & 7 & Multiple claims derived from a ResourceClaimTemplate & Evaluate isolated multi-tenant consolidation behind one endpoint. \\
         \bottomrule
     \end{tabularx}
 \end{table}
+
 
 \paragraph{Baseline.}
 The baseline runs one Ollama replica on the single \texttt{7g.40gb} device. This case establishes how much throughput and utilization one TinyLlama server can obtain when resource capacity is not deliberately constrained. It is mostly designed to expose underutilization rather than to represent an optimized serving configuration.
