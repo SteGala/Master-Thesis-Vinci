@@ -10,7 +10,7 @@ The result of combining \textbf{MIG} and \textbf{DRA} is a layered architecture 
     \centering
     \includegraphics[width=0.65\textwidth]{images/DRA_MIG_Architecture.drawio}
     \caption{MIG + DRA Architecture Overview}
-    \label{fig:esempio}
+    \label{fig:mig-dra-logical-architecture}
 \end{figure}
 
 Table~\ref{tab:logical-architecture} summarizes the resulting logical architecture. The hardware and allocation layers jointly form the \emph{infrastructure layer}; the application layer consumes the capabilities exposed by that infrastructure.
@@ -60,16 +60,37 @@ This observation motivates the second proof of concept. A long-running inference
 \section{From Workload Priority to GPU-Aware Service Classes}
 \label{subsec:kueue-problem}
 
+The first proof of concept exposes a distinction between dynamic device allocation and dynamic application demand. Each Ollama Pod obtains a device when it starts and then processes many inference requests using that same allocation. An HTTP request to the inference server is not a new ResourceClaim: the model-serving process continues to use the device already prepared for its container. Consequently, changes in request volume or request length do not cause Kubernetes to reconsider the assigned GPU.
+
+DRA could still provide more granular selection at startup, for example by filtering memory capacity or compute resources. However, those conditions would be evaluated for the server's initial allocation, not repeatedly for its individual requests. In the first PoC, claims intentionally accept any MIG device, so even that finer selection is not exercised. The performance comparison therefore primarily concerns MIG geometry and workload consolidation, rather than DRA's ability to select among heterogeneous resources.
+
+This limitation is characteristic of long-running services with persistent device assignments, including conventional LLM-serving Deployments. It is not an intrinsic restriction on language models: new replicas, restarts, or batch executions can introduce new allocation opportunities. Nevertheless, a continuously running server does not automatically translate its changing inference demand into repeated DRA decisions, and the experimental stack does not support resizing or exchanging its GPU in place~\cite{kubernetes135dra}.
+
+A suitable second scenario must therefore contain recurring resource requests and releases. Finite Kubernetes Jobs provide this lifecycle naturally: a Job performs a bounded task, its Pods stop using the device when execution finishes, and the allocation can subsequently be reclaimed according to the Pod and claim lifecycle. Each new Job can request a compatible device from the inventory available at that time. Even when successive Jobs run the same program, a flexible claim can permit different devices as resources become free. The objective is to identify a specific policy under which this expressiveness yields measurable improvements in completion time or aggregate throughput. Such improvements would be an indirect consequence of better resource selection and reuse, not a computational acceleration inherently provided by DRA.
+
+\subsection{Kueue as the Batch Admission Layer}
+\label{subsec:kueue-admission-layer}
+
+Kueue was selected because it adds Kubernetes-native queueing and quota management without replacing the existing scheduler or Job controller. It decides which workloads may start, which must wait, and, where configured, which may be preempted. Namespace-scoped LocalQueues connect submitted Jobs to cluster-level ClusterQueues, where administrators define resource quotas and admission policies. Pod placement and device preparation remain the responsibility of Kubernetes and the DRA driver~\cite{kueue2026overview}.
+
+This division of responsibilities fits the proposed architecture: Kueue governs access to a shared pool, while DRA expresses which devices are acceptable for each admitted workload. In the ResourceClaimTemplate integration, Kueue maps DeviceClasses to logical quota resources through \texttt{deviceClassMappings} and can account for the requested device count. Admission verifies quota availability; it does not itself choose the physical MIG instance~\cite{kueue2026dra}. Kueue therefore provides an appropriate setting for evaluating repeated, policy-controlled allocations without requiring a custom queueing system.
+
+\subsection{Beyond Admission Priority}
+\label{subsec:gpu-aware-service-classes}
+
+Kueue already supports workload priority through \texttt{WorkloadPriorityClass}, independently of Pod priority. This value influences queue ordering and, depending on configuration, preemption and competition for borrowed quota. Higher priority can favour earlier admission, but admission still depends on available quota and the applicable queueing policy. It is not an unconditional guarantee that a Job starts first~\cite{kueue2026workloadpriority}.
+
+More importantly, priority does not determine how quickly an admitted Job executes. It does not select a larger GPU partition, increase the compute capacity of an assigned device, or accelerate CUDA kernels. A high-priority Job may therefore start earlier but still finish late if it runs on a slow or constrained resource. From the user's perspective, the relevant objective is often the total time between submission and completion, not admission time alone. That interval includes queueing, startup, execution, and completion overhead.
+
+The proposed policy interprets a request for higher service priority as an interest in earlier completion. It therefore combines two complementary mechanisms:
+
 \begin{itemize}
-    \item la natura dei job si sposa bene con le richieste dinamiche DRA
-    \item priorità garantisce precedenza di allocazione, ma non tempo di esecuzione
-    \item Idea: Service Class
+    \item \textbf{Admission priority}, supplied by Kueue, expresses the relative importance of starting the workload.
+    \item \textbf{GPU eligibility constraints}, supplied by DRA, express which compute and memory resources may execute it.
 \end{itemize}
 
-\section{Kueue Background}
-\label{subsec:kueue-background}
+Together, these define a \emph{GPU-aware service class}. For example, a Gold class can combine higher workload priority with a minimum compute requirement, allowing either a medium or a large compatible MIG device. A Bronze class can combine lower priority with eligibility for a smaller partition. This is a policy built from existing Kueue and DRA objects, not a new native Kueue API, an execution-time predictor, or a deadline guarantee.
 
-\begin{itemize}
-    \item cosa è e a cosa serve kueue
-    \item gestione delle priorità in kueue
-\end{itemize}
+The flexibility of the device requirement matters as much as its minimum capacity. Pinning every high-priority Job to one exact profile can leave another suitable partition idle while Jobs continue waiting. A broader eligibility condition allows subsequent Jobs to use whichever acceptable resource becomes available, without changing devices already assigned to running Jobs. This can reduce avoidable waiting and improve use of a heterogeneous pool.
+
+The benefit remains workload-dependent: a larger partition is useful only if the application can exploit it, and waiting for a larger device can outweigh a shorter execution time. The proposed service classes must therefore be evaluated against explicit allocation baselines at comparable usable capacity. Any observed gain belongs to the combined admission and allocation policy, rather than proving that DRA alone always improves performance.

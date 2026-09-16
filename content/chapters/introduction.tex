@@ -26,6 +26,19 @@ Inference also introduces temporal heterogeneity. An interactive service may rem
 \label{subsec:allocation-vs-utilization}
 Evidence from production clusters illustrates the gap between reserving devices and using them effectively. In their study of Microsoft's Philly cluster, Jeon et al.\ report a mean GPU utilization of 52.32\% across the analysed training jobs, despite the exclusive allocation of devices to those jobs. The authors identify synchronization and interference in shared system resources among the causes of reduced utilization~\cite[Section~3.2 and Table~3]{jeon2019philly}. This is a historical observation from a particular training environment, not a universal estimate for present-day inference platforms. A later study of Alibaba's machine-learning platform, covering more than 6,000 GPUs, likewise identifies low GPU utilization, scheduling constraints, and queueing delays as operational challenges~\cite{weng2022mlaas}. Together, these studies motivate measuring the difference between allocated capacity and useful work rather than treating device occupancy in a scheduler as sufficient evidence of efficiency.
 
+Figure~\ref{fig:allocation-utilization-gap} contrasts an exclusively allocated but underused accelerator with the intended effect of consolidating compatible workloads. The percentages and workload sizes in these diagrams are illustrative, not measured results or a prescribed MIG geometry.
+
+\begin{figure}[H]
+    \centering
+    \subfloat[Allocated capacity can remain unused.]{%
+        \includegraphics[width=0.58\textwidth]{images/util.drawio.png}}
+    \par\medskip
+    \subfloat[Consolidation can exploit more of the available capacity.]{%
+        \includegraphics[width=0.58\textwidth]{images/goal_util.jpg}}
+    \caption{Conceptual distinction between resource allocation and actual utilization, and the consolidation objective.}
+    \label{fig:allocation-utilization-gap}
+\end{figure}
+
 These considerations make GPU management in the cloud a multi-objective design problem. \emph{Resource efficiency} requires matching allocations to actual demand and avoiding capacity that is reserved but unusable by other applications. \emph{Scalability} requires supporting increasing concurrency and changing traffic without assuming that every additional service replica needs another complete accelerator. \emph{Flexibility} concerns using the available hardware for different workload profiles, while \emph{agility} concerns how quickly allocations and deployments can respond when those profiles or their priorities change.
 
 Efficiency must also coexist with \emph{reliability}: an application should not unexpectedly lose its service quality because a neighbouring workload changes behaviour, and failures must be handled with clearly understood recovery procedures. \emph{Simplified management} calls for consistent provisioning, configuration, and observability rather than isolated manual device assignments. Finally, \emph{future-proofing} means reducing unnecessary coupling between application specifications and a particular hardware configuration. It does not mean that new accelerators can be adopted without driver, compatibility, or application validation. These goals can conflict: finer sharing may improve density while complicating isolation, and maintaining recovery headroom may reduce average utilization. A useful platform must make those trade-offs explicit.
@@ -44,6 +57,19 @@ The natural response is to consolidate compatible workloads, but consolidation m
 \label{sec:objectives}
 
 The objective of this thesis is to design, implement, and evaluate a Kubernetes-based approach to improving GPU utilization for AI inference using NVIDIA MIG and DRA. Improvement is understood in terms of useful application work and resource efficiency, subject to acceptable performance and isolation requirements. The work does not assume that partitioning is preferable to using a complete GPU, or that replacing device-plugin allocation with DRA necessarily increases throughput.
+
+Figure~\ref{fig:kubernetes-allocation-objective} illustrates the intended infrastructure transition: from coarse allocations that leave compatible workloads pending or competing for a device to controlled sharing and more flexible assignment of available capacity.
+
+\begin{figure}[H]
+    \centering
+    \subfloat[Conventional allocation scenario.]{%
+        \includegraphics[width=0.48\textwidth]{images/kubernetes_legacy.drawio.png}}
+    \hfill
+    \subfloat[Target allocation scenario.]{%
+        \includegraphics[width=0.48\textwidth]{images/kubernetes_goal.drawio (1).png}}
+    \caption{Conceptual allocation scenarios motivating better integration of GPU sharing and resource selection in Kubernetes.}
+    \label{fig:kubernetes-allocation-objective}
+\end{figure}
 
 The first objective is to identify when consolidation of lightweight inference workloads is beneficial. The corresponding proof of concept deploys multiple Ollama instances serving TinyLlama and compares a single instance on the complete GPU, multiple instances sharing the complete GPU, an individual instance restricted to a MIG partition, and multiple instances on separate MIG partitions. This progression distinguishes the cost of restricting an application from the possible benefit of executing several applications concurrently. It also separates per-request behaviour from aggregate infrastructure throughput. Model configuration, request characteristics, and concurrency must be controlled so that the comparison does not attribute a change in the workload to the allocation mechanism.
 

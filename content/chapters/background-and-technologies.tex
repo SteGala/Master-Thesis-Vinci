@@ -76,6 +76,15 @@ A GI owns its allocated SM slices and has separate paths through crossbar ports,
 
 The hierarchy includes a second level. The compute resources inside a GI can be subdivided into one or more \emph{Compute Instances} (CIs). Each CI receives dedicated SM slices and can be scheduled independently, but CIs belonging to the same GI share the GI's memory slices and other engines. Full separation between tenants is therefore obtained by assigning distinct GIs. Subdividing one GI into multiple CIs instead provides additional compute concurrency with only partial isolation. A CUDA application sees the combination of a CI and its parent GI as a MIG device.
 
+Figure~\ref{fig:mig-hardware-partitioning} illustrates this hierarchy on an A100: a GPU Instance reserves memory and compute slices, while a Compute Instance subdivides compute within its parent GI.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{images/mig-partitioning-ex2.png}
+    \caption{A100 MIG organization, highlighting a \texttt{1g.5gb} GPU Instance and its Compute Instance within the physical slice layout~\cite{nvidia2026migconcepts}.}
+    \label{fig:mig-hardware-partitioning}
+\end{figure}
+
 MIG substantially narrows interference, but it does not create physically independent boards. Instances still reside on the same accelerator and share board-level power and thermal constraints. The isolation guarantee should therefore be described as dedicated compute and memory-system partitions with fault containment, not as complete independence from every physical effect. This distinction also explains why the performance of a profile must be measured for the target workload rather than inferred solely from its fraction of SMs.
 
 \subsection{Profiles and Placement on the A100}
@@ -120,11 +129,36 @@ There are additional application constraints. Available profiles and media engin
 
 Kubernetes schedules CPU and memory as built-in resources, but it does not contain vendor-specific knowledge for every accelerator. Hardware vendors expose devices through an extension mechanism. In the conventional model, a device plugin advertises an \emph{extended resource} such as \texttt{nvidia.com/gpu}. A container requests an integer quantity in its resource limits, and the scheduler places its Pod on a node with sufficient advertised capacity. Extended resources cannot be overcommitted, and the generic API does not permit fractional quantities~\cite{kubernetes135deviceplugins,kubernetesgpuscheduling}.
 
-\subsection{Device Plugin Operation}
+\subsection{Device Plugin}
 
 A device plugin normally runs as a DaemonSet on every relevant node and exposes a gRPC service over a Unix socket. It registers with the local kubelet and implements \texttt{ListAndWatch}, which streams the device identifiers and their health state. The kubelet publishes the resulting capacity in the Node status. When a Pod is scheduled, the kubelet's device manager selects available identifiers and calls the plugin's \texttt{Allocate} method. The response tells the container runtime how to make the chosen device accessible by adding device nodes, mounts, environment variables, annotations, or Container Device Interface (CDI) names. Optional calls can express a preferred allocation or perform device-specific preparation before container start~\cite{kubernetes135deviceplugins}.
 
 This model deliberately keeps the scheduler vendor-neutral, but the abstraction is coarse. Devices are represented as opaque, countable units. The central scheduler knows the resource name and integer availability, not a structured set of properties such as GPU architecture, memory capacity, interconnect topology, or MIG parent relationship. Vendors can expose separate resource names and node labels---for example, one extended resource for each MIG profile---but the workload specification then becomes coupled to those names and alternatives are difficult to express.
+
+For example, the following Pod fragment requests one device through the conventional NVIDIA extended resource. The container image is illustrative; the allocation mechanism is the integer quantity under \texttt{resources.limits}~\cite{kubernetes135deviceplugins}.
+
+\begin{lstlisting}[language={},basicstyle=\ttfamily\footnotesize,numbers=none,caption={Device-plugin request for one advertised GPU.},label={lst:device-plugin-request}]
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gpu-workload
+spec:
+  containers:
+    - name: workload
+      image: example.com/ai-workload:1.0
+      resources:
+        limits:
+          nvidia.com/gpu: 1
+\end{lstlisting}
+
+The request means \enquote{one unit of \texttt{nvidia.com/gpu}}, not \enquote{one GPU with at least 10~GB of memory} or \enquote{a compatible device with at least 28 SMs}. In a whole-device configuration, it reserves the advertised GPU regardless of actual utilization. With NVIDIA's mixed MIG strategy, an exact-profile request can instead use \texttt{nvidia.com/mig-2g.10gb: 1}, but it still names that profile rather than expressing a range of acceptable capacities. Figure~\ref{fig:device-plugin-profile-selection} illustrates the resulting constraint: a workload that could use a \texttt{1g.5gb} partition remains pending when it explicitly requests a busy \texttt{2g.10gb} profile. Node labels or vendor-specific mechanisms can refine selection, but the resource-count request itself does not carry these structured conditions.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.52\textwidth]{images/device_plugin.drawio.png}
+    \caption{Exact-profile allocation can leave a workload pending while a different compatible MIG partition is available.}
+    \label{fig:device-plugin-profile-selection}
+\end{figure}
 
 The device-plugin API also offers no native per-workload configuration or claim object with an independent lifecycle. A request is made by a particular container, and devices cannot ordinarily be shared between containers through that request. Vendor extensions can oversubscribe the advertised count for time-slicing, but the Kubernetes scheduler then accounts logical replicas rather than actual memory or compute use. Consequently, a plugin can expose pre-created MIG devices effectively, yet it cannot by itself express a request for any device with at least a stated capacity, coordinate several device constraints, or provision a new partition as part of scheduling. These limitations motivate DRA.
 
@@ -144,6 +178,14 @@ Four objects define the core model:
     \item[\texttt{ResourceClaimTemplate}] A template from which Kubernetes creates a separate ResourceClaim for each Pod. The generated claim is tied to that Pod's lifecycle, which is convenient for Deployments and Jobs whose replicas require equivalent but distinct devices.
 \end{description}
 
+% Static frame extracted from the supplied GIF; the original animation is preserved.
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{images/dra-framework.png}
+    \caption{Overview of DRA API objects and their interaction with the resource-claim controller, scheduler, kubelet, and vendor driver. Static frame from the supplied animation.}
+    \label{fig:dra-framework}
+\end{figure}
+
 This separation reduces coupling between an application and physical inventory. For example, an administrator can define a class for accelerators suitable for latency-critical inference, while a claim further filters by vendor-published memory or compute attributes. A request may also provide a prioritized list of alternatives, allowing the scheduler to choose a fallback resource when the preferred one is unavailable. The application must still be capable of operating on every permitted alternative: DRA describes allocation flexibility, not automatic application adaptation.
 
 Allocation is coordinated with Pod scheduling. The driver first publishes ResourceSlices. When a Pod references a claim template, the resource-claim controller creates a claim for it. The scheduler evaluates ordinary Pod constraints and DRA requests together, finds an eligible device on an eligible node, and records the allocation in the claim status. After the Pod is bound, the kubelet invokes the node-local DRA plugin to prepare the selected device. The plugin can configure the hardware and generate CDI information, after which the container runtime injects the required device nodes and libraries. When the final consumer releases the resource, the kubelet calls the corresponding unprepare operation and Kubernetes or the user removes the claim according to its ownership~\cite{kubernetes135dra,kubernetes135dratutorial}.
@@ -161,6 +203,15 @@ MIG can be handled in two distinct ways. In \emph{static MIG} mode, an administr
 The driver can also associate time-slicing or MPS configuration with a claim. Newer experimental integrations expose \emph{consumable capacity}, in which the scheduler accounts several independent claims against capacity advertised for one physical GPU or MIG device. This is scheduling accounting, not runtime enforcement: a memory amount reserved in a claim does not by itself prevent a CUDA process from allocating more device memory, and colocated workloads may still interfere~\cite{nvidia2026draconsumable}. These options broaden the design space but also reinforce the need to state which features and isolation mechanisms an experiment actually uses.
 
 The same project includes a separate \texttt{compute-domain.nvidia.com} plugin for allocating IMEX channels on supported multi-node NVLink systems. That capability addresses cross-node memory fabrics and is outside the scope of a single-node MIG study. The distinction is useful architecturally: Kubernetes supplies the common claim and scheduling framework, while the NVIDIA driver decides which GPU-specific resources, attributes, and preparation actions are available.
+
+Figure~\ref{fig:dra-capability-selection} revisits the device-plugin example using a capacity-based requirement. An available \texttt{1g.5gb} device can satisfy the illustrated memory range even though the \texttt{2g.10gb} devices are busy. This expresses compatibility rather than requiring a particular profile; the application must still operate correctly on the selected resource.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.52\textwidth]{images/Copia di device_plugin.drawio.png}
+    \caption{Capability-based selection: a compatible available partition can satisfy the workload without an exact-profile request.}
+    \label{fig:dra-capability-selection}
+\end{figure}
 
 \section{Linux GPU Software Stack}
 \label{sec:linux-gpu-stack}
