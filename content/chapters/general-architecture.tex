@@ -78,9 +78,7 @@ This division of responsibilities fits the proposed architecture: Kueue governs 
 \subsection{Beyond Admission Priority}
 \label{subsec:gpu-aware-service-classes}
 
-Kueue already supports workload priority through \texttt{WorkloadPriorityClass}, independently of Pod priority. This value influences queue ordering and, depending on configuration, preemption and competition for borrowed quota. Higher priority can favour earlier admission, but admission still depends on available quota and the applicable queueing policy. It is not an unconditional guarantee that a Job starts first~\cite{kueue2026workloadpriority}.
-
-More importantly, priority does not determine how quickly an admitted Job executes. It does not select a larger GPU partition, increase the compute capacity of an assigned device, or accelerate CUDA kernels. A high-priority Job may therefore start earlier but still finish late if it runs on a slow or constrained resource. From the user's perspective, the relevant objective is often the total time between submission and completion, not admission time alone. That interval includes queueing, startup, execution, and completion overhead.
+Kueue already supports workload priority through \texttt{WorkloadPriorityClass}, independently of Pod priority. This value influences queue ordering and, depending on configuration, preemption and competition for borrowed quota. Higher priority can favour earlier admission, but it does not determine how quickly an admitted Job executes. It does not select a larger GPU partition, increase the compute capacity of an assigned device, or accelerate CUDA kernels. A high-priority Job may therefore start earlier but still finish late if it runs on a slow or constrained resource. From the user's perspective, the relevant objective is often the total time between submission and completion, not admission time alone. That interval includes queueing, startup, execution, and completion overhead.
 
 The proposed policy interprets a request for higher service priority as an interest in earlier completion. It therefore combines two complementary mechanisms:
 

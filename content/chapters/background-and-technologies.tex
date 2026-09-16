@@ -133,9 +133,9 @@ Kubernetes schedules CPU and memory as built-in resources, but it does not conta
 
 A device plugin normally runs as a DaemonSet on every relevant node and exposes a gRPC service over a Unix socket. It registers with the local kubelet and implements \texttt{ListAndWatch}, which streams the device identifiers and their health state. The kubelet publishes the resulting capacity in the Node status. When a Pod is scheduled, the kubelet's device manager selects available identifiers and calls the plugin's \texttt{Allocate} method. The response tells the container runtime how to make the chosen device accessible by adding device nodes, mounts, environment variables, annotations, or Container Device Interface (CDI) names. Optional calls can express a preferred allocation or perform device-specific preparation before container start~\cite{kubernetes135deviceplugins}.
 
-This model deliberately keeps the scheduler vendor-neutral, but the abstraction is coarse. Devices are represented as opaque, countable units. The central scheduler knows the resource name and integer availability, not a structured set of properties such as GPU architecture, memory capacity, interconnect topology, or MIG parent relationship. Vendors can expose separate resource names and node labels---for example, one extended resource for each MIG profile---but the workload specification then becomes coupled to those names and alternatives are difficult to express.
+This model deliberately keeps the scheduler vendor-neutral, but the abstraction is coarse. Devices are represented as opaque, countable units. The central scheduler knows the resource name and integer availability, not a structured set of properties such as GPU architecture, memory capacity, interconnect topology, or MIG parent relationship. Vendors can expose separate resource names and node labels, but the workload specification then becomes coupled to those names and alternatives are difficult to express.
 
-For example, the following Pod fragment requests one device through the conventional NVIDIA extended resource. The container image is illustrative; the allocation mechanism is the integer quantity under \texttt{resources.limits}~\cite{kubernetes135deviceplugins}.
+For example, the following Pod fragment requests one device through the conventional NVIDIA extended resource.
 
 \begin{lstlisting}[language={},basicstyle=\ttfamily\footnotesize,numbers=none,caption={Device-plugin request for one advertised GPU.},label={lst:device-plugin-request}]
 apiVersion: v1
@@ -182,7 +182,7 @@ Four objects define the core model:
 \begin{figure}[H]
     \centering
     \includegraphics[width=\textwidth]{images/dra-framework.png}
-    \caption{Overview of DRA API objects and their interaction with the resource-claim controller, scheduler, kubelet, and vendor driver. Static frame from the supplied animation.}
+    \caption{Overview of DRA API objects and their interactions.}
     \label{fig:dra-framework}
 \end{figure}
 
@@ -204,7 +204,7 @@ The driver can also associate time-slicing or MPS configuration with a claim. Ne
 
 The same project includes a separate \texttt{compute-domain.nvidia.com} plugin for allocating IMEX channels on supported multi-node NVLink systems. That capability addresses cross-node memory fabrics and is outside the scope of a single-node MIG study. The distinction is useful architecturally: Kubernetes supplies the common claim and scheduling framework, while the NVIDIA driver decides which GPU-specific resources, attributes, and preparation actions are available.
 
-Figure~\ref{fig:dra-capability-selection} revisits the device-plugin example using a capacity-based requirement. An available \texttt{1g.5gb} device can satisfy the illustrated memory range even though the \texttt{2g.10gb} devices are busy. This expresses compatibility rather than requiring a particular profile; the application must still operate correctly on the selected resource.
+Figure~\ref{fig:dra-capability-selection} revisits the device-plugin example using a capacity-based requirement. An available \texttt{1g.5gb} device can satisfy the illustrated memory range even though the \texttt{2g.10gb} devices are busy. This expresses compatibility rather than requiring a particular profile, however the application must still operate correctly on the selected resource.
 
 \begin{figure}[H]
     \centering

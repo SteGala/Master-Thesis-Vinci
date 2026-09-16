@@ -26,7 +26,7 @@ Inference also introduces temporal heterogeneity. An interactive service may rem
 \label{subsec:allocation-vs-utilization}
 Evidence from production clusters illustrates the gap between reserving devices and using them effectively. In their study of Microsoft's Philly cluster, Jeon et al.\ report a mean GPU utilization of 52.32\% across the analysed training jobs, despite the exclusive allocation of devices to those jobs. The authors identify synchronization and interference in shared system resources among the causes of reduced utilization~\cite[Section~3.2 and Table~3]{jeon2019philly}. This is a historical observation from a particular training environment, not a universal estimate for present-day inference platforms. A later study of Alibaba's machine-learning platform, covering more than 6,000 GPUs, likewise identifies low GPU utilization, scheduling constraints, and queueing delays as operational challenges~\cite{weng2022mlaas}. Together, these studies motivate measuring the difference between allocated capacity and useful work rather than treating device occupancy in a scheduler as sufficient evidence of efficiency.
 
-Figure~\ref{fig:allocation-utilization-gap} contrasts an exclusively allocated but underused accelerator with the intended effect of consolidating compatible workloads. The percentages and workload sizes in these diagrams are illustrative, not measured results or a prescribed MIG geometry.
+Figure~\ref{fig:allocation-utilization-gap} contrasts an exclusively allocated but underused accelerator with the intended effect of consolidating compatible workloads.
 
 \begin{figure}[H]
     \centering
@@ -35,7 +35,7 @@ Figure~\ref{fig:allocation-utilization-gap} contrasts an exclusively allocated b
     \par\medskip
     \subfloat[Consolidation can exploit more of the available capacity.]{%
         \includegraphics[width=0.58\textwidth]{images/goal_util.jpg}}
-    \caption{Conceptual distinction between resource allocation and actual utilization, and the consolidation objective.}
+    \caption{Conceptual distinction between resource allocation and actual utilization.}
     \label{fig:allocation-utilization-gap}
 \end{figure}
 
