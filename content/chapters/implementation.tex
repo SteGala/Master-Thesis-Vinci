@@ -96,12 +96,14 @@ The client-side \texttt{load-test.sh} script sends non-streaming requests to the
     \item \textbf{Target output tokens} is passed to Ollama as \texttt{num\_predict}. It provides a common requested generation length and changes the amount of decoding work. Adjusting this setting so as not to exceed the model's maximum capacity is useful for fixing the number of output tokens and consequently the direct load on the GPU. This ensures that the prefill and decode phases always involve the same number of tokens, making it possible to normalize the resource usage of all requests within a single test.
 \end{itemize}
 
-Each HTTP call uses a new connection, which allows the Kubernetes Service to select an endpoint again for every request. The response fields and client timestamps are stored as JSON Lines. The evaluation script then derives per-request latency, generation rate, wall-clock duration, actual aggregate throughput in tokens per second, and average latency. DCGM-derived GPU measurements are collected independently through Prometheus.
+Each HTTP call uses a new connection, which allows the Kubernetes Service to select an endpoint again for every request. The response fields and client timestamps are stored as JSON Lines. The evaluation script then derives per-request latency, wall-clock duration, User Throughput in tokens per second, and average latency. DCGM-derived GPU measurements are collected independently through Prometheus.
 
 \subsection{Testing Methodology}
 \label{subsec:multi-ollama-methodology}
 
-Four test cases progressively modify the number of Ollama processes and their device assignment, all the rest remain unchanged. For statistical purposes the independent variables are the MIG device configuration, the number of server replicas and client concurrency. The required output length, on the other hand, was kept fixed at 25 tokens, as this proved to be the optimal operating window for the created architecture to deliver the best advantages.
+Four test cases progressively modify the number of Ollama processes and their device assignment, while the application workload remains unchanged. The independent variables are the MIG device configuration, the number of server replicas, and the size of the submitted request burst. Six burst sizes are evaluated: 10, 100, 200, 300, 400, and 500 requests. Every request uses exactly the same prompt and produces 25 output tokens. The amount and type of useful work are therefore equal across configurations at a given burst size, making throughput, latency, and energy-per-token results directly comparable.
+
+Before every measured run, a warm-up phase sends an unrecorded request to each active Ollama replica. This forces the model to be loaded in every server before measurements begin and prevents model-loading overhead from being charged to one experimental case. After warm-up, the requests are submitted as a single burst and the run ends only after the complete burst has been drained.
 
 \begin{table}[htbp]
     \centering
@@ -138,11 +140,128 @@ The final case applies the seven-device \texttt{1g.5gb} layout and deploys seven
 \subsection{Results and Evaluation}
 \label{subsec:multi-ollama-results}
 
-\begin{itemize}
-    \item discussione sui numeri
-    \item il right sizing è critico
-    \item DRA no perfomance boost, statico. trovare uno scenario che ne possa benificiare
-\end{itemize}
+\subsubsection{Measurement Metrics and Data Alignment}
+
+The evaluation combines application-level measurements with GPU-level telemetry. The following metrics are defined before presenting the results. Let $N$ be the number of completed requests, $t_i$ the number of tokens actually generated for request $i$, $T=\sum_{i=1}^{N}t_i$ the total generated tokens, and $W$ the wall time between the submission of the first request and the completion of the last one.
+
+\begin{description}
+    \item[Wall time.] $W$ measures how long the service requires to drain the complete burst. It therefore includes both inference execution and the time spent by requests waiting for an available server.
+    \item[User Throughput.] The end-to-end service throughput is
+    \begin{equation}
+        \mathrm{User\ Throughput}=\frac{T}{W}\quad [\mathrm{token/s}].
+    \end{equation}
+    Actual generated-token counts returned by Ollama are used rather than the requested output limit. Because every response in this experiment contains 25 tokens, the corresponding completion rate in requests per second is obtained by dividing User Throughput by 25.
+    \item[Request latency.] The latency of one request is the total duration reported by Ollama, which includes model processing and any application-level queueing. The arithmetic mean describes the typical completion time, while the 95th percentile (p95) is the value below which 95\% of request latencies fall and represents the tail of the burst.
+    \item[Physical SM activity.] DCGM's graphics-engine activity is weighted by the number of MIG compute slices assigned to each instance and normalized to the seven compute slices exposed by the A100 in MIG mode. If $u_{\mathrm{SM}}(t)$ is the resulting physical-GPU activity fraction, the run-level value is
+    \begin{equation}
+        U_{\mathrm{SM}}=\frac{1}{W}\int u_{\mathrm{SM}}(t)\,\mathrm{d}t.
+    \end{equation}
+    This expresses the fraction of the physical GPU's SM capacity that was active over the workload duration, allowing different MIG layouts and run lengths to be compared on the same scale.
+    \item[Equivalent average GPU power.] GPU board power is integrated over the run. With $P_{\mathrm{idle}}$ denoting the pre-run idle power and $P(t)$ the sampled board power, run energy is calculated as
+    \begin{equation}
+        E_{\mathrm{GPU}}=P_{\mathrm{idle}}W+\int \max\!\left(P(t)-P_{\mathrm{idle}},0\right)\,\mathrm{d}t.
+    \end{equation}
+    The equivalent average power is then $P_{\mathrm{eq}}=E_{\mathrm{GPU}}/W$. This value makes the power and duration contributions explicit on a common wall-time basis.
+    \item[GPU energy per token.] Energy efficiency is reported as
+    \begin{equation}
+        E_{\mathrm{token}}=\frac{E_{\mathrm{GPU}}}{T}=\frac{P_{\mathrm{eq}}}{\mathrm{User\ Throughput}}\quad [\mathrm{J/token}].
+    \end{equation}
+    A lower value means that the GPU board expends less energy for each useful output token.
+\end{description}
+
+Application records contain request start and completion timestamps, total duration, and generated-token count. In parallel, DCGM Exporter publishes GPU samples to Prometheus every five seconds. The collector associates the two sources at run level: timestamps delimit the measured burst, while an idle sample before and after the corresponding GPU-activity episode preserves the complete telemetry pulse for integration. Board-power values repeated for the MIG instances of the same physical GPU are averaged per timestamp rather than summed, so the result represents one A100 board.
+
+\subsubsection{Numerical Results}
+
+Figures~\ref{fig:ollama-user-throughput} and~\ref{fig:ollama-sm-activity} show the complete progression across the six burst sizes. Tables~\ref{tab:ollama-high-load-performance} and~\ref{tab:ollama-high-load-gpu} summarize the arithmetic mean of the three largest bursts, containing 300, 400, and 500 requests. The same three workloads are used for every case; consequently, the averages provide a compact comparison under sustained burst pressure.
+
+\begin{table}[htbp]
+    \centering
+    \small
+    \caption{Application-level results averaged over the 300-, 400-, and 500-request bursts.}
+    \label{tab:ollama-high-load-performance}
+    \begin{tabular}{lrrrr}
+        \toprule
+        \textbf{Case} & \makecell{\textbf{User Throughput}\\\textbf{(token/s)}} & \makecell{\textbf{Wall time}\\\textbf{(s)}} & \makecell{\textbf{Mean latency}\\\textbf{(s)}} & \makecell{\textbf{p95 latency}\\\textbf{(s)}} \\
+        \midrule
+        Baseline & 302.27 & 33.09 & 17.13 & 29.89 \\
+        Restricted instance & 252.43 & 39.59 & 20.46 & 36.86 \\
+        Time-sharing & 306.32 & 32.69 & 16.83 & 30.63 \\
+        Multiple instances & \textbf{647.03} & \textbf{15.66} & \textbf{7.60} & \textbf{12.86} \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.92\textwidth]{images/plot/real-throughput-25-tokens.png}
+    \caption{User Throughput as a function of burst size. Every request produces 25 output tokens.}
+    \label{fig:ollama-user-throughput}
+\end{figure}
+
+The baseline remains close to 302~token/s from 100 requests onward. Restricted instance stabilizes near 252~token/s, while time-sharing remains in the same range as the baseline. Multiple instances instead reaches 669.64~token/s at 300 requests and the maximum observed value of 675.49~token/s at 400 requests; it delivers 595.95~token/s at 500 requests. At the 400-request point, its wall time is 14.80~s instead of 33.10~s for the baseline, while mean latency decreases from 17.25 to 7.61~s and p95 latency from 30.74 to 12.48~s.
+
+\begin{table}[htbp]
+    \centering
+    \small
+    \caption{GPU-level results averaged over the 300-, 400-, and 500-request bursts.}
+    \label{tab:ollama-high-load-gpu}
+    \begin{tabular}{lrrr}
+        \toprule
+        \textbf{Case} & \makecell{\textbf{Physical SM}\\\textbf{activity (\%)}} & \makecell{\textbf{Equivalent average}\\\textbf{power (W)}} & \makecell{\textbf{GPU energy}\\\textbf{(J/token)}} \\
+        \midrule
+        Baseline & 62.29 & 148.1 & 0.490 \\
+        Restricted instance & 29.57 & 135.6 & 0.537 \\
+        Time-sharing & \textbf{92.91} & 150.1 & 0.490 \\
+        Multiple instances & 56.46 & 194.8 & \textbf{0.302} \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.92\textwidth]{images/plot/sm-utilization-25-tokens.png}
+    \caption{Physical-GPU SM activity normalized across the evaluated MIG layouts.}
+    \label{fig:ollama-sm-activity}
+\end{figure}
+
+\begin{figure}[htbp]
+    \centering
+    \subfloat[Equivalent average GPU power.\label{fig:ollama-power}]{%
+        \includegraphics[width=0.49\textwidth]{images/plot/power-25-tokens.png}}
+    \hfill
+    \subfloat[GPU energy per generated token.\label{fig:ollama-energy-token}]{%
+        \includegraphics[width=0.49\textwidth]{images/plot/energy-per-token-25-tokens.png}}
+    \caption{Power and energy results as a function of burst size.}
+    \label{fig:ollama-power-energy}
+\end{figure}
+
+The GPU measurements expose different behaviours. Time-sharing records the highest physical SM activity, averaging 92.91\%, but its User Throughput remains close to that of the baseline. Multiple instances averages 56.46\% SM activity and draws more power, yet records the lowest energy per token. At 400 requests, for example, it uses 207.5~W rather than 151.9~W, but reduces energy from 0.503 to 0.307~J/token because the burst is completed substantially faster.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.84\textwidth]{images/plot/throughput-vs-energy-per-token-25.png}
+    \caption{Joint comparison of User Throughput and GPU energy per token. The desirable operating region is toward the lower-right corner.}
+    \label{fig:ollama-throughput-energy}
+\end{figure}
+
+Across the three largest bursts, Multiple instances increases User Throughput by 114.05\% relative to the baseline. Over the same paired workloads, wall time falls by 53.13\%, mean latency by 55.54\%, and p95 latency by 57.03\%. Equivalent average power rises by 31.52\%, but GPU energy per token decreases by 38.37\%. Figure~\ref{fig:ollama-throughput-energy} displays this combination directly: the high-load Multiple instances points move toward both higher useful output rate and lower energy cost per output token.
+
+\subsubsection{Evaluation}
+
+\paragraph{Oversizing and local right-sizing.}
+The baseline throughput quickly reaches a plateau even as the burst grows, while physical SM activity remains close to 62\%. Giving a single TinyLlama server the full-size \texttt{7g.40gb} device therefore does not translate all reserved compute capacity into additional completed tokens. Restricting that server to \texttt{3g.20gb} retains approximately 83.5\% of baseline User Throughput while physical SM activity falls to less than half of the baseline value. This confirms that the original allocation is oversized for one server. However, local right-sizing alone leaves the remaining GPU capacity unused: the Restricted instance takes longer to drain the queue and consumes 9.66\% more energy per token than the baseline at high load. The relevant objective is consequently not only to make one allocation smaller, but also to consolidate useful work into the capacity released by that decision.
+
+\paragraph{Activity versus productive utilization.}
+Time-sharing illustrates why raw GPU activity is insufficient as an optimization target. Seven Ollama processes on the same \texttt{7g.40gb} device increase physical SM activity by 49.16\% relative to the baseline, but User Throughput improves by only 1.34\% and energy per token remains effectively unchanged. The GPU is active more often, yet the shared execution domain does not turn that activity into a proportional increase in completed requests. In this workload, process multiplexing introduces concurrency without creating the independent spatial execution paths needed to drain the burst faster.
+
+\paragraph{MIG consolidation.}
+Multiple instances combines the right-sized resource footprint with seven independently executing servers. A lightweight autoregressive request cannot exploit the seven compute slices of the large MIG device proportionally, because token generation within one sequence remains sequential. The submitted burst, however, contains many independent sequences. Mapping each replica to a separate \texttt{1g.5gb} instance converts this request-level parallelism into physical parallelism while preserving a single service endpoint. This is why Multiple instances more than doubles User Throughput at high load even though its average physical SM activity is slightly lower than in the baseline and far below the time-sharing value.
+
+The energy result follows from the same mechanism. Multiple instances requires higher average power while its seven partitions operate concurrently, but the increase in useful throughput is considerably larger than the increase in power. The GPU therefore remains committed to the burst for a much shorter interval, reducing the energy charged to each generated token. The experiment consequently supports energy per unit of useful work, rather than instantaneous power or utilization alone, as the appropriate efficiency measure.
+
+\paragraph{Role of DRA.}
+DRA provides the declarative allocation mechanism that gives each replica its own compatible MIG device and keeps application manifests separated from the physical device identifiers. In this proof of concept, the claim is resolved when the Pod starts and remains bound throughout the server lifetime; no device resize, migration, or new allocation decision occurs while requests are processed. The measured performance and energy gains must therefore be attributed primarily to MIG right-sizing and parallel service replication. DRA enables and organizes the per-Pod provisioning of those partitions, but it does not itself accelerate inference in this experiment.
 
 \section{PoC 2: Kueue-Managed Batch Workloads}
 \label{sec:kueue-use-case}
