@@ -266,20 +266,184 @@ DRA provides the declarative allocation mechanism that gives each replica its ow
 \section{PoC 2: Kueue-Managed Batch Workloads}
 \label{sec:kueue-use-case}
 
+The second proof of concept turns the GPU-aware service-class concept introduced in Section~\ref{subsec:kueue-problem} into an executable batch platform. Unlike the persistent Ollama servers, every workload in this experiment has a finite lifetime: it requests a device, performs a fixed amount of work, terminates, and releases the allocation. The resulting sequence of claims gives Kueue and DRA repeated opportunities to admit a new Job and select a compatible device from a heterogeneous MIG pool.
+
 \subsection{System Design}
 \label{subsec:kueue-architecture}
 
-\begin{itemize}
-    \item defnizione delle priorità e della classi QoS attraverso la combinazione di deviceClasses e ClaimTemplates e motivazione delle scelte (coservativa vs aggressiva)
-    \item descrizione scenario: job pool 
-    \item baseline gold su M
-    \item baseline gold su L
-    \item baseline mix
-    \item d-flex
-\end{itemize}
+\subsubsection{Workload and GPU Inventory}
+
+The experiment keeps the A100 partition geometry fixed throughout every test. The physical GPU exposes three concurrently usable MIG devices: a small \texttt{1g.5gb} instance with 14 streaming multiprocessors (S), a medium \texttt{2g.10gb} instance with 28 SMs (M), and a large \texttt{3g.20gb} instance with 42 SMs (L). DRA does not create or resize these partitions during a run; it selects among the devices already published by the NVIDIA driver.
+
+Each Kubernetes Job executes the same deterministic PyTorch benchmark. It creates two square matrices of size $8192$, performs five warm-up multiplications, and then executes 100 measured \texttt{float32} matrix multiplications with TF32 disabled. A fixed seed is used for data generation. Dense matrix multiplication is one of the fundamental computational operations underlying neural-network inference, so the benchmark acts as a controlled proxy for a finite AI inference task. It is deliberately not tied to a particular model or serving framework: every Job performs exactly the same amount of GPU work, allowing the experiment to isolate admission and allocation behaviour.
+
+\subsubsection{Implementing GPU-Aware Service Classes}
+
+The service class is implemented as a composition of existing Kueue and DRA objects rather than as a new Kubernetes API. The manifests define four cluster-scoped \texttt{DeviceClass} objects. Their CEL selectors first require the NVIDIA driver and a MIG device, then filter the advertised \texttt{multiprocessors} capacity. Three classes select an exact device size, while \texttt{mig-fast} expresses the flexible condition used by D-Flex. Table~\ref{tab:kueue-device-classes} summarizes the resulting allocation vocabulary.
+
+\begin{table}[htbp]
+    \centering
+    \small
+    \caption{DRA device classes and claim templates used by the Kueue proof of concept.}
+    \label{tab:kueue-device-classes}
+    \begin{tabularx}{\textwidth}{@{}p{0.14\textwidth}p{0.18\textwidth}p{0.18\textwidth}p{0.19\textwidth}X@{}}
+        \toprule
+        \textbf{Eligible device} & \textbf{MIG profile} & \textbf{DeviceClass} & \textbf{CEL SM condition} & \textbf{ResourceClaimTemplate} \\
+        \midrule
+        S & \texttt{1g.5gb} & \texttt{mig-small} & $\mathrm{SM}=14$ & \texttt{claim-small} \\
+        M & \texttt{2g.10gb} & \texttt{mig-medium} & $\mathrm{SM}=28$ & \texttt{claim-medium} \\
+        L & \texttt{3g.20gb} & \texttt{mig-large} & $\mathrm{SM}=42$ & \texttt{claim-large} \\
+        M or L & either profile & \texttt{mig-fast} & $\mathrm{SM}\geq 28$ & \texttt{claim-fast} \\
+        \bottomrule
+    \end{tabularx}
+\end{table}
+
+Each corresponding \texttt{ResourceClaimTemplate} requests exactly one device from its \texttt{DeviceClass}. The exact classes encode a profile decision made before submission. By contrast, \texttt{claim-fast} states that either M or L is acceptable and leaves the concrete choice to scheduling time. This distinction is central to the experiment: the flexible claim does not prefer L and does not modify a running allocation; it only broadens the set of devices that may satisfy each new Gold Job.
+
+Admission priority is expressed independently through two \texttt{WorkloadPriorityClass} objects. \texttt{gold-priority} has value 1000, whereas \texttt{bronze-priority} has value 100. The Job template associates each Job with its service class by setting the Kueue priority-class label and referencing the appropriate DRA claim template~\cite{kueue2026workloadpriority}. The Pod template declares a \texttt{resources.claims} entry named \texttt{gpu} and maps it, through \texttt{resourceClaims}, to the selected \texttt{resourceClaimTemplateName}; Kubernetes therefore creates a distinct claim for every Job Pod. In the policy evaluated here, the two logical service classes are therefore composed as follows:
+
+\begin{description}
+    \item[Gold.] High admission priority combined with an M, L, or flexible M/L device requirement, depending on the test arm.
+    \item[Bronze.] Lower admission priority combined with the exact small-device requirement \texttt{claim-small}.
+\end{description}
+
+This construction keeps the two meanings separate. Priority determines which pending workload Kueue considers first, while the claim determines which hardware can execute it. In this experiment, Gold and Bronze consume disjoint device categories and quota, so admission priority expresses the service-class policy but does not make the two classes compete for the same MIG instance. A high priority alone would not give a Job a faster GPU, and a broad device selector alone would not give it precedence in the queue.
+
+Every Job also carries the \texttt{kueue.x-k8s.io/queue-name} label. This points to a namespace-scoped \texttt{LocalQueue}, which in turn forwards the workload to the \texttt{ClusterQueue} for the selected arm. The four routes are \texttt{baseline-medium-uq} $\rightarrow$ \texttt{baseline-medium-cq}, \texttt{baseline-large-uq} $\rightarrow$ \texttt{baseline-large-cq}, \texttt{baseline-mix-uq} $\rightarrow$ \texttt{baseline-mix-cq}, and \texttt{dflex-uq} $\rightarrow$ \texttt{dflex-cq}. The ClusterQueue uses \texttt{BestEffortFIFO} and defines nominal quota for the logical device resources. Kueue's cluster configuration maps the DRA DeviceClasses to those resource names and accounts for each exact-one request as one quota unit~\cite{kueue2026dra}. For example, \texttt{dflex-cq} exposes one \texttt{mig-small} unit and two \texttt{mig-fast} units, corresponding to the S device and the two devices in the M/L eligibility set. The queue controls how many workloads may be admitted; the Kubernetes scheduler and NVIDIA DRA driver still select and prepare the physical MIG instance.
+
+The complete lifecycle is consequently:
+
+\begin{enumerate}
+    \item the runner submits suspended Jobs carrying a queue name, a Kueue priority class, and a reference to a ResourceClaimTemplate;
+    \item Kueue represents each Job as a Workload, orders pending work using its admission policy, and reserves the corresponding device quota;
+    \item after admission, the Job is unsuspended and its Pod obtains a ResourceClaim generated from the selected template;
+    \item the Kubernetes scheduler resolves the claim against the available ResourceSlices, after which the NVIDIA DRA driver prepares the chosen MIG device for the container;
+    \item the benchmark executes and the Job terminates, releasing the device so that another pending Job can be admitted and allocated.
+\end{enumerate}
+
+The important dynamic property lies between Jobs. A device already assigned to a running Job is never resized or exchanged. Flexibility emerges because every completion returns a device to the shared pool and every subsequent \texttt{claim-fast} can be resolved again against the resources then available.
 
 \subsection{Testing Methodology}
 \label{subsec:kueue-methodology}
 
+\subsubsection{Common Job Pool}
+
+All four test cases process the same burst-submitted pool of 14 Jobs: 12 Gold Jobs and two Bronze Jobs. Every Job requests exactly one device and runs the fixed matrix-multiplication workload described above. Bronze always uses \texttt{bronze-priority} and \texttt{claim-small}; therefore, its two Jobs execute sequentially on S. Gold always uses \texttt{gold-priority}, while the eligible device set changes with the allocation policy under test. Keeping the program, input size, iteration count, class composition, and MIG geometry constant makes the claim policy the relevant experimental variable.
+
+\subsubsection{Allocation Cases}
+
+The first two cases reproduce the static choice exposed by the conventional device-plugin model. With profile-specific extended resources, an administrator must decide in advance whether a workload requests the M or L resource name; the scheduler cannot interpret a condition such as \emph{at least 28 SMs} and choose between both profiles. The experiment implements these two semantics with exact DRA claims so that the surrounding runtime remains unchanged across the complete campaign.
+
+\paragraph{Baseline-M: conservative choice.}
+All 12 Gold Jobs use \texttt{claim-medium}, while Bronze uses \texttt{claim-small}. The associated ClusterQueue has quota for one M and one S device, so at most two Jobs can run concurrently and L remains outside the usable pool. This represents a conservative provisioning decision: Gold receives the smaller profile that satisfies the assumed minimum requirement, preserving the larger partition for other possible uses but accepting a longer execution time for each Gold Job.
+
+\paragraph{Baseline-L: performance-oriented choice.}
+All 12 Gold Jobs instead use \texttt{claim-large}. The ClusterQueue exposes one L and one S quota unit, again allowing at most two concurrent Jobs and leaving M unused. This is the performance-oriented static decision: each Gold Job receives the faster profile, but the administrator commits every Gold request to that scarcer resource even when M is available and sufficient.
+
+Neither baseline is a capacity-equivalent comparison for D-Flex. D-Flex can use S, M, and L concurrently, whereas Baseline-M and Baseline-L deliberately expose only two of those partitions. Comparing D-Flex only with either initial baseline would therefore combine two effects: flexible allocation and access to an additional MIG device.
+
+\paragraph{Baseline-mix: capacity-equivalent static assignment.}
+Baseline-mix was introduced to remove that imbalance. Six Gold Jobs are created with \texttt{claim-medium} and six with \texttt{claim-large}; the two Bronze Jobs retain \texttt{claim-small}. Its ClusterQueue has one quota unit for each of S, M, and L, so it can use the same three physical partitions as D-Flex. Although this arm uses DRA to keep the allocation path consistent, its policy remains static: the 6/6 split is encoded in the Job claims before submission. A Job assigned to M cannot move to L when L becomes free, and vice versa. Baseline-mix is therefore the principal comparison point for measuring the value of flexible eligibility rather than the trivial benefit of using more hardware.
+
+\paragraph{D-Flex: flexible service class.}
+All 12 Gold Jobs use \texttt{claim-fast}, whose DeviceClass accepts any MIG device with at least 28 SMs. The D-Flex ClusterQueue grants two units of \texttt{mig-fast} quota, representing the concurrently available M and L devices, while Bronze retains its independent S quota. When either M or L is released, the next eligible Gold Job can use it. No fixed distribution between the two profiles is specified, and no preference for L is encoded: the observed distribution emerges from device availability as the pool progresses.
+
+Table~\ref{tab:kueue-test-arms} condenses the four configurations. Figure~\ref{fig:kueue-arm-schematics} illustrates the difference between the static M baseline and the flexible D-Flex policy.
+
+\begin{table}[htbp]
+    \centering
+    \small
+    \caption{Allocation policies evaluated with the common 14-Job pool.}
+    \label{tab:kueue-test-arms}
+    \begin{tabularx}{\textwidth}{@{}p{0.16\textwidth}p{0.24\textwidth}p{0.17\textwidth}p{0.20\textwidth}X@{}}
+        \toprule
+        \textbf{Arm} & \textbf{Gold allocation} & \textbf{Bronze allocation} & \textbf{Queue quota} & \textbf{Policy} \\
+        \midrule
+        Baseline-M & 12 $\times$ exact M & 2 $\times$ exact S & 1 S + 1 M & Conservative static choice \\
+        Baseline-L & 12 $\times$ exact L & 2 $\times$ exact S & 1 S + 1 L & Performance-oriented static choice \\
+        Baseline-mix & 6 $\times$ exact M + 6 $\times$ exact L & 2 $\times$ exact S & 1 S + 1 M + 1 L & Capacity-equivalent static split \\
+        D-Flex & 12 $\times$ M-or-L & 2 $\times$ exact S & 1 S + 2 M/L & Flexible per-Job selection \\
+        \bottomrule
+    \end{tabularx}
+\end{table}
+
+\begin{figure}[htbp]
+    \centering
+    \subfloat[Baseline-M: every Gold Job is bound to the M queue and claim.]{%
+        \includegraphics[width=0.43\textwidth]{images/kueue-baselineM.png}}
+    \hfill
+    \subfloat[D-Flex: every Gold Job may consume the next available M or L device.]{%
+        \includegraphics[width=0.43\textwidth]{images/kueue-dflex.png}}
+    \caption{Static and flexible processing of the same Gold and Bronze Job pool.}
+    \label{fig:kueue-arm-schematics}
+\end{figure}
+
+The runner waits for the entire pool to finish and records Kubernetes object timestamps together with the device reported by the benchmark. The evaluation uses the following metrics:
+
+\begin{description}
+    \item[Pool makespan.] Time between the creation of the first Job and the completion of the last Job. It captures queueing, startup, and execution for the complete batch.
+    \item[Pool throughput.] Number of completed Jobs divided by the pool makespan, reported in Jobs per second.
+    \item[Queue wait.] Time between Job creation and Kueue admission of the corresponding Workload.
+    \item[Execution time.] Time between Pod start and Job completion; it includes container-level overhead around the measured CUDA computation.
+    \item[End-to-end time.] Time between creation and completion of an individual Job.
+\end{description}
+
 \subsection{Results and Evaluation}
 \label{subsec:kueue-results}
+
+\subsubsection{Numerical Results}
+
+All four pools completed 14 Jobs without failures. Table~\ref{tab:kueue-all-arm-results} reports the directly observed pool-level results. Baseline-M required 370~s, whereas the performance-oriented Baseline-L required 275~s. Baseline-mix reduced the makespan to 185~s by using S, M, and L concurrently. D-Flex completed the same pool in 158~s. The device records also confirm the intended allocation policies: Baseline-mix executed exactly six Gold Jobs on M and six on L, while D-Flex dynamically produced a distribution of five on M and seven on L.
+
+\begin{table}[htbp]
+    \centering
+    \small
+    \caption{Observed numerical results for the four allocation cases.}
+    \label{tab:kueue-all-arm-results}
+    \begin{tabular}{lrrrr}
+        \toprule
+        \textbf{Arm} & \makecell{\textbf{Completed}\\\textbf{Jobs}} & \makecell{\textbf{Gold device}\\\textbf{distribution}} & \makecell{\textbf{Makespan}\\\textbf{(s)}} & \makecell{\textbf{Throughput}\\\textbf{(Jobs/s)}} \\
+        \midrule
+        Baseline-M & 14 & 12 M & 370 & 0.03784 \\
+        Baseline-L & 14 & 12 L & 275 & 0.05091 \\
+        Baseline-mix & 14 & 6 M + 6 L & 185 & 0.07568 \\
+        D-Flex & 14 & 5 M + 7 L & \textbf{158} & \textbf{0.08861} \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+The capacity-equivalent comparison is presented separately in Table~\ref{tab:kueue-main-comparison}. Relative to Baseline-mix, D-Flex saves 27~s and reduces the pool makespan by 14.59\%. Since both cases complete the same number of Jobs, this corresponds to an increase in pool throughput of 17.09\%, from 0.07568 to 0.08861~Jobs/s.
+
+\begin{table}[htbp]
+    \centering
+    \small
+    \caption{Capacity-equivalent comparison between the static mixed baseline and D-Flex.}
+    \label{tab:kueue-main-comparison}
+    \begin{tabular}{lrrr}
+        \toprule
+        \textbf{Metric} & \textbf{Baseline-mix} & \textbf{D-Flex} & \textbf{Change} \\
+        \midrule
+        Pool makespan (s) & 185 & 158 & $-14.59\%$ \\
+        Pool throughput (Jobs/s) & 0.07568 & 0.08861 & $+17.09\%$ \\
+        Gold mean queue wait (s) & 67.25 & 65.42 & $-2.73\%$ \\
+        Gold mean execution time (s) & 25.50 & 24.67 & $-3.27\%$ \\
+        Gold mean end-to-end time (s) & 93.08 & 90.33 & $-2.95\%$ \\
+        Gold maximum end-to-end time (s) & 185 & 158 & $-14.59\%$ \\
+        Bronze mean end-to-end time (s) & 79.50 & 80.00 & $+0.63\%$ \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+The class-level measurements show that Bronze behaviour remains essentially unchanged: mean execution time is 52.5~s in both cases, and mean end-to-end time changes only from 79.5 to 80.0~s. Gold mean end-to-end time decreases more modestly than the pool makespan, from 93.08 to 90.33~s. The largest system-level benefit is therefore concentrated at the end of the pool, where the final Gold completion moves from 185 to 158~s.
+
+\subsubsection{Evaluation}
+
+The first two baselines expose the cost of forcing the administrator to select one profile globally. Baseline-M makes the conservative choice but serializes all Gold work through the slower M device while L is unused. Baseline-L shortens each Gold execution by selecting the faster device, but M remains unused and the pool still has only one execution path for Gold. These outcomes motivate a policy that can consume both compatible resources rather than trying to identify one universally correct profile in advance.
+
+Baseline-mix demonstrates that simply making both devices usable already removes much of that serialization. It is nevertheless constrained by its precomputed 6/6 assignment. Once the last Gold Job bound to L completes, a pending Job bound to M cannot consume the newly free L device. The final Baseline-mix Job is consequently a medium-bound Job that waits 155~s and completes at 185~s, even though the large partition has become available earlier.
+
+D-Flex removes that artificial boundary. Every pending Gold Job retains both M and L as valid choices until its own claim is allocated. In the observed execution, this policy sends seven Gold Jobs to L and five to M rather than enforcing the static 6/6 split. The final Job is allocated to L, waits 137~s, and completes at 158~s. The improvement is not caused by accelerating matrix multiplication on a given profile: M and L retain their original performance. It is produced by avoiding an idle compatible partition while acceptable work is still queued.
+
+This result shows how performance can be extracted from DRA's more expressive allocation model in a specific workload lifecycle. DRA does not speed up CUDA execution and does not resize a running Job. Instead, the flexible \texttt{mig-fast} condition is re-evaluated for successive claims, allowing Kueue-admitted work to follow the availability of a heterogeneous MIG pool. Compared with the capacity-equivalent static policy, this reduces the tail of the pool and increases completed Jobs per unit time.
+
+The measured gain therefore belongs to the combined policy implemented with MIG, DRA, and Kueue. MIG provides independently usable S, M, and L devices; Kueue supplies priority-aware admission and quota control; DRA expresses and resolves the M-or-L requirement at each Job boundary. Within this scenario, their integration converts allocation flexibility into a measurable 14.59\% makespan reduction and 17.09\% throughput improvement over the credible static mixed baseline.
