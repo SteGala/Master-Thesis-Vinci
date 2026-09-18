@@ -152,7 +152,7 @@ The evaluation combines application-level measurements with GPU-level telemetry.
     \end{equation}
     Actual generated-token counts returned by Ollama are used rather than the requested output limit. Because every response in this experiment contains 25 tokens, the corresponding completion rate in requests per second is obtained by dividing User Throughput by 25.
     \item[Request latency.] The latency of one request is the total duration reported by Ollama, which includes model processing and any application-level queueing. The arithmetic mean describes the typical completion time, while the 95th percentile (p95) is the value below which 95\% of request latencies fall and represents the tail of the burst.
-    \item[Physical SM activity.] DCGM's graphics-engine activity is weighted by the number of MIG compute slices assigned to each instance and normalized to the seven compute slices exposed by the A100 in MIG mode. If $u_{\mathrm{SM}}(t)$ is the resulting physical-GPU activity fraction, the run-level value is
+    \item[Physical SM activity (GPU Utilization).] DCGM's graphics-engine activity is weighted by the number of MIG compute slices assigned to each instance and normalized to the seven compute slices exposed by the A100 in MIG mode. If $u_{\mathrm{SM}}(t)$ is the resulting physical-GPU activity fraction, the run-level value is
     \begin{equation}
         U_{\mathrm{SM}}=\frac{1}{W}\int u_{\mathrm{SM}}(t)\,\mathrm{d}t.
     \end{equation}
@@ -195,7 +195,7 @@ Figures~\ref{fig:ollama-user-throughput} and~\ref{fig:ollama-sm-activity} show t
 \begin{figure}[htbp]
     \centering
     \includegraphics[width=0.92\textwidth]{images/plot/real-throughput-25-tokens.png}
-    \caption{User Throughput as a function of burst size. Every request produces 25 output tokens.}
+    \caption{User Throughput}
     \label{fig:ollama-user-throughput}
 \end{figure}
 
@@ -221,22 +221,9 @@ The baseline remains close to 302~token/s from 100 requests onward. Restricted i
 \begin{figure}[htbp]
     \centering
     \includegraphics[width=0.92\textwidth]{images/plot/sm-utilization-25-tokens.png}
-    \caption{Physical-GPU SM activity normalized across the evaluated MIG layouts.}
+    \caption{GPU Utilization normalized across the evaluated MIG layouts.}
     \label{fig:ollama-sm-activity}
 \end{figure}
-
-\begin{figure}[htbp]
-    \centering
-    \subfloat[Equivalent average GPU power.\label{fig:ollama-power}]{%
-        \includegraphics[width=0.49\textwidth]{images/plot/power-25-tokens.png}}
-    \hfill
-    \subfloat[GPU energy per generated token.\label{fig:ollama-energy-token}]{%
-        \includegraphics[width=0.49\textwidth]{images/plot/energy-per-token-25-tokens.png}}
-    \caption{Power and energy results as a function of burst size.}
-    \label{fig:ollama-power-energy}
-\end{figure}
-
-The GPU measurements expose different behaviours. Time-sharing records the highest physical SM activity, averaging 92.91\%, but its User Throughput remains close to that of the baseline. Multiple instances averages 56.46\% SM activity and draws more power, yet records the lowest energy per token. At 400 requests, for example, it uses 207.5~W rather than 151.9~W, but reduces energy from 0.503 to 0.307~J/token because the burst is completed substantially faster.
 
 \begin{figure}[htbp]
     \centering
@@ -244,6 +231,19 @@ The GPU measurements expose different behaviours. Time-sharing records the highe
     \caption{Joint comparison of User Throughput and GPU energy per token. The desirable operating region is toward the lower-right corner.}
     \label{fig:ollama-throughput-energy}
 \end{figure}
+
+\begin{figure}[htbp]
+    \centering
+    \subfloat[Equivalent average GPU power.\label{fig:ollama-power}]{%
+        \includegraphics[width=0.8\textwidth]{images/plot/power-25-tokens.png}}
+    \hfill
+    \subfloat[GPU energy per generated token.\label{fig:ollama-energy-token}]{%
+        \includegraphics[width=0.8\textwidth]{images/plot/energy-per-token-25-tokens.png}}
+    \caption{Power and energy results as a function of burst size.}
+    \label{fig:ollama-power-energy}
+\end{figure}
+
+The GPU measurements expose different behaviours. Time-sharing records the highest physical SM activity, averaging 92.91\%, but its User Throughput remains close to that of the baseline. Multiple instances averages 56.46\% SM activity and draws more power, yet records the lowest energy per token. At 400 requests, for example, it uses 207.5~W rather than 151.9~W, but reduces energy from 0.503 to 0.307~J/token because the burst is completed substantially faster.
 
 Across the three largest bursts, Multiple instances increases User Throughput by 114.05\% relative to the baseline. Over the same paired workloads, wall time falls by 53.13\%, mean latency by 55.54\%, and p95 latency by 57.03\%. Equivalent average power rises by 31.52\%, but GPU energy per token decreases by 38.37\%. Figure~\ref{fig:ollama-throughput-energy} displays this combination directly: the high-load Multiple instances points move toward both higher useful output rate and lower energy cost per output token.
 
@@ -286,9 +286,9 @@ The service class is implemented as a composition of existing Kueue and DRA obje
     \small
     \caption{DRA device classes and claim templates used by the Kueue proof of concept.}
     \label{tab:kueue-device-classes}
-    \begin{tabularx}{\textwidth}{@{}p{0.14\textwidth}p{0.18\textwidth}p{0.18\textwidth}p{0.19\textwidth}X@{}}
+    \begin{tabularx}{\textwidth}{@{}p{0.1\textwidth}p{0.16\textwidth}p{0.16\textwidth}p{0.13\textwidth}X@{}}
         \toprule
-        \textbf{Eligible device} & \textbf{MIG profile} & \textbf{DeviceClass} & \textbf{CEL SM condition} & \textbf{ResourceClaimTemplate} \\
+        \textbf{Device} & \textbf{MIG profile} & \textbf{DeviceClass} & \textbf{Condition} & \textbf{ResourceClaimTemplate} \\
         \midrule
         S & \texttt{1g.5gb} & \texttt{mig-small} & $\mathrm{SM}=14$ & \texttt{claim-small} \\
         M & \texttt{2g.10gb} & \texttt{mig-medium} & $\mathrm{SM}=28$ & \texttt{claim-medium} \\
@@ -298,7 +298,7 @@ The service class is implemented as a composition of existing Kueue and DRA obje
     \end{tabularx}
 \end{table}
 
-Each corresponding \texttt{ResourceClaimTemplate} requests exactly one device from its \texttt{DeviceClass}. The exact classes encode a profile decision made before submission. By contrast, \texttt{claim-fast} states that either M or L is acceptable and leaves the concrete choice to scheduling time. This distinction is central to the experiment: the flexible claim does not prefer L and does not modify a running allocation; it only broadens the set of devices that may satisfy each new Gold Job.
+Each corresponding \texttt{ResourceClaimTemplate} requests exactly one device from its \texttt{DeviceClass}. The exact classes encode a profile decision made before submission. By contrast, \texttt{claim-fast} states that either M or L is acceptable and \textbf{leaves the concrete choice to scheduling time}. This distinction is central to the experiment: the flexible claim does not prefer L and does not modify a running allocation: it only broadens the set of devices that may satisfy each new Gold Job.
 
 Admission priority is expressed independently through two \texttt{WorkloadPriorityClass} objects. \texttt{gold-priority} has value 1000, whereas \texttt{bronze-priority} has value 100. The Job template associates each Job with its service class by setting the Kueue priority-class label and referencing the appropriate DRA claim template~\cite{kueue2026workloadpriority}. The Pod template declares a \texttt{resources.claims} entry named \texttt{gpu} and maps it, through \texttt{resourceClaims}, to the selected \texttt{resourceClaimTemplateName}; Kubernetes therefore creates a distinct claim for every Job Pod. In the policy evaluated here, the two logical service classes are therefore composed as follows:
 
@@ -309,7 +309,7 @@ Admission priority is expressed independently through two \texttt{WorkloadPriori
 
 This construction keeps the two meanings separate. Priority determines which pending workload Kueue considers first, while the claim determines which hardware can execute it. In this experiment, Gold and Bronze consume disjoint device categories and quota, so admission priority expresses the service-class policy but does not make the two classes compete for the same MIG instance. A high priority alone would not give a Job a faster GPU, and a broad device selector alone would not give it precedence in the queue.
 
-Every Job also carries the \texttt{kueue.x-k8s.io/queue-name} label. This points to a namespace-scoped \texttt{LocalQueue}, which in turn forwards the workload to the \texttt{ClusterQueue} for the selected arm. The four routes are \texttt{baseline-medium-uq} $\rightarrow$ \texttt{baseline-medium-cq}, \texttt{baseline-large-uq} $\rightarrow$ \texttt{baseline-large-cq}, \texttt{baseline-mix-uq} $\rightarrow$ \texttt{baseline-mix-cq}, and \texttt{dflex-uq} $\rightarrow$ \texttt{dflex-cq}. The ClusterQueue uses \texttt{BestEffortFIFO} and defines nominal quota for the logical device resources. Kueue's cluster configuration maps the DRA DeviceClasses to those resource names and accounts for each exact-one request as one quota unit~\cite{kueue2026dra}. For example, \texttt{dflex-cq} exposes one \texttt{mig-small} unit and two \texttt{mig-fast} units, corresponding to the S device and the two devices in the M/L eligibility set. The queue controls how many workloads may be admitted; the Kubernetes scheduler and NVIDIA DRA driver still select and prepare the physical MIG instance.
+The ClusterQueue uses \texttt{BestEffortFIFO} and defines nominal quota for the logical device resources. Kueue's cluster configuration maps the DRA DeviceClasses to those resource names and accounts for each exact-one request as one quota unit~\cite{kueue2026dra}. For example, \texttt{dflex-cq} exposes one \texttt{mig-small} unit and two \texttt{mig-fast} units, corresponding to the S device and the two devices in the M/L eligibility set. The queue controls how many workloads may be admitted, then the Kubernetes scheduler and NVIDIA DRA driver still select and prepare the physical MIG instance.
 
 The complete lifecycle is consequently:
 
@@ -328,11 +328,11 @@ The important dynamic property lies between Jobs. A device already assigned to a
 
 \subsubsection{Common Job Pool}
 
-All four test cases process the same burst-submitted pool of 14 Jobs: 12 Gold Jobs and two Bronze Jobs. Every Job requests exactly one device and runs the fixed matrix-multiplication workload described above. Bronze always uses \texttt{bronze-priority} and \texttt{claim-small}; therefore, its two Jobs execute sequentially on S. Gold always uses \texttt{gold-priority}, while the eligible device set changes with the allocation policy under test. Keeping the program, input size, iteration count, class composition, and MIG geometry constant makes the claim policy the relevant experimental variable.
+All four test cases process the same burst-submitted pool of 14 Jobs: 12 Gold Jobs and two Bronze Jobs. Every Job requests exactly one device and runs the fixed matrix-multiplication workload described above. Bronze always uses \texttt{bronze-priority} and \texttt{claim-small}, therefore, its two Jobs execute sequentially on S. Gold always uses \texttt{gold-priority}, while the eligible device set changes with the allocation policy under test. Keeping the program, input size, iteration count, class composition, and MIG geometry constant makes the claim policy the relevant experimental variable.
 
 \subsubsection{Allocation Cases}
 
-The first two cases reproduce the static choice exposed by the conventional device-plugin model. With profile-specific extended resources, an administrator must decide in advance whether a workload requests the M or L resource name; the scheduler cannot interpret a condition such as \emph{at least 28 SMs} and choose between both profiles. The experiment implements these two semantics with exact DRA claims so that the surrounding runtime remains unchanged across the complete campaign.
+The first two cases reproduce the static choice exposed by the conventional device-plugin model. With profile-specific extended resources, an administrator must decide in advance whether a workload requests the M or L resource name, meaning that the scheduler cannot interpret a condition such as \emph{at least 28 SMs} and choose between both profiles. The experiment implements these two semantics with exact DRA claims so that the surrounding runtime remains unchanged across the complete campaign.
 
 \paragraph{Baseline-M: conservative choice.}
 All 12 Gold Jobs use \texttt{claim-medium}, while Bronze uses \texttt{claim-small}. The associated ClusterQueue has quota for one M and one S device, so at most two Jobs can run concurrently and L remains outside the usable pool. This represents a conservative provisioning decision: Gold receives the smaller profile that satisfies the assumed minimum requirement, preserving the larger partition for other possible uses but accepting a longer execution time for each Gold Job.
@@ -346,7 +346,7 @@ Neither baseline is a capacity-equivalent comparison for D-Flex. D-Flex can use 
 Baseline-mix was introduced to remove that imbalance. Six Gold Jobs are created with \texttt{claim-medium} and six with \texttt{claim-large}; the two Bronze Jobs retain \texttt{claim-small}. Its ClusterQueue has one quota unit for each of S, M, and L, so it can use the same three physical partitions as D-Flex. Although this arm uses DRA to keep the allocation path consistent, its policy remains static: the 6/6 split is encoded in the Job claims before submission. A Job assigned to M cannot move to L when L becomes free, and vice versa. Baseline-mix is therefore the principal comparison point for measuring the value of flexible eligibility rather than the trivial benefit of using more hardware.
 
 \paragraph{D-Flex: flexible service class.}
-All 12 Gold Jobs use \texttt{claim-fast}, whose DeviceClass accepts any MIG device with at least 28 SMs. The D-Flex ClusterQueue grants two units of \texttt{mig-fast} quota, representing the concurrently available M and L devices, while Bronze retains its independent S quota. When either M or L is released, the next eligible Gold Job can use it. No fixed distribution between the two profiles is specified, and no preference for L is encoded: the observed distribution emerges from device availability as the pool progresses.
+All 12 Gold Jobs use \texttt{claim-fast}, whose DeviceClass accepts any MIG device with \textbf{at least 28 SMs}. The D-Flex ClusterQueue grants two units of \texttt{mig-fast} quota, representing the concurrently available M and L devices, while Bronze retains its independent S quota. When either M or L is released, the next eligible Gold Job can use it. No fixed distribution between the two profiles is specified, and no preference for L is encoded: the observed distribution emerges from device availability as the pool progresses.
 
 Table~\ref{tab:kueue-test-arms} condenses the four configurations. Figure~\ref{fig:kueue-arm-schematics} illustrates the difference between the static M baseline and the flexible D-Flex policy.
 
@@ -355,14 +355,14 @@ Table~\ref{tab:kueue-test-arms} condenses the four configurations. Figure~\ref{f
     \small
     \caption{Allocation policies evaluated with the common 14-Job pool.}
     \label{tab:kueue-test-arms}
-    \begin{tabularx}{\textwidth}{@{}p{0.16\textwidth}p{0.24\textwidth}p{0.17\textwidth}p{0.20\textwidth}X@{}}
+    \begin{tabularx}{\textwidth}{p{0.15\textwidth}p{0.31\textwidth}p{0.13\textwidth}X}
         \toprule
-        \textbf{Arm} & \textbf{Gold allocation} & \textbf{Bronze allocation} & \textbf{Queue quota} & \textbf{Policy} \\
+        \textbf{Arm} & \textbf{Gold} & \textbf{Bronze} & \textbf{Policy} \\
         \midrule
-        Baseline-M & 12 $\times$ exact M & 2 $\times$ exact S & 1 S + 1 M & Conservative static choice \\
-        Baseline-L & 12 $\times$ exact L & 2 $\times$ exact S & 1 S + 1 L & Performance-oriented static choice \\
-        Baseline-mix & 6 $\times$ exact M + 6 $\times$ exact L & 2 $\times$ exact S & 1 S + 1 M + 1 L & Capacity-equivalent static split \\
-        D-Flex & 12 $\times$ M-or-L & 2 $\times$ exact S & 1 S + 2 M/L & Flexible per-Job selection \\
+        Baseline-M & 12 $\times$ exact M & 2 $\times$ exact S & Conservative static choice \\
+        Baseline-L & 12 $\times$ exact L & 2 $\times$ exact S & Performative static choice \\
+        Baseline-mix & 6 $\times$ exact M + 6 $\times$ exact L & 2 $\times$ exact S & Capacity-equivalent static split \\
+        D-Flex & 12 $\times$ M-or-L & 2 $\times$ exact S & Flexible per-Job selection \\
         \bottomrule
     \end{tabularx}
 \end{table}
@@ -370,10 +370,10 @@ Table~\ref{tab:kueue-test-arms} condenses the four configurations. Figure~\ref{f
 \begin{figure}[htbp]
     \centering
     \subfloat[Baseline-M: every Gold Job is bound to the M queue and claim.]{%
-        \includegraphics[width=0.43\textwidth]{images/kueue-baselineM.png}}
+        \includegraphics[width=0.49\textwidth]{images/kueue-baselineM.png}}
     \hfill
     \subfloat[D-Flex: every Gold Job may consume the next available M or L device.]{%
-        \includegraphics[width=0.43\textwidth]{images/kueue-dflex.png}}
+        \includegraphics[width=0.49\textwidth]{images/kueue-dflex.png}}
     \caption{Static and flexible processing of the same Gold and Bronze Job pool.}
     \label{fig:kueue-arm-schematics}
 \end{figure}
@@ -384,7 +384,7 @@ The runner waits for the entire pool to finish and records Kubernetes object tim
     \item[Pool makespan.] Time between the creation of the first Job and the completion of the last Job. It captures queueing, startup, and execution for the complete batch.
     \item[Pool throughput.] Number of completed Jobs divided by the pool makespan, reported in Jobs per second.
     \item[Queue wait.] Time between Job creation and Kueue admission of the corresponding Workload.
-    \item[Execution time.] Time between Pod start and Job completion; it includes container-level overhead around the measured CUDA computation.
+    \item[Execution time.] Time between Pod start and Job completion. It includes container level overhead around the measured CUDA computation.
     \item[End-to-end time.] Time between creation and completion of an individual Job.
 \end{description}
 
@@ -393,7 +393,7 @@ The runner waits for the entire pool to finish and records Kubernetes object tim
 
 \subsubsection{Numerical Results}
 
-All four pools completed 14 Jobs without failures. Table~\ref{tab:kueue-all-arm-results} reports the directly observed pool-level results. Baseline-M required 370~s, whereas the performance-oriented Baseline-L required 275~s. Baseline-mix reduced the makespan to 185~s by using S, M, and L concurrently. D-Flex completed the same pool in 158~s. The device records also confirm the intended allocation policies: Baseline-mix executed exactly six Gold Jobs on M and six on L, while D-Flex dynamically produced a distribution of five on M and seven on L.
+Table~\ref{tab:kueue-all-arm-results} reports the directly observed pool-level results. Baseline-M required 370~s, whereas the performance-oriented Baseline-L required 275~s. Baseline-mix reduced the makespan to 185~s by using S, M, and L concurrently. D-Flex completed the same pool in 158~s. The device records also confirm the intended allocation policies: Baseline-mix executed exactly six Gold Jobs on M and six on L, while D-Flex dynamically produced a distribution of five on M and seven on L.
 
 \begin{table}[htbp]
     \centering
@@ -429,12 +429,9 @@ The capacity-equivalent comparison is presented separately in Table~\ref{tab:kue
         Gold mean execution time (s) & 25.50 & 24.67 & $-3.27\%$ \\
         Gold mean end-to-end time (s) & 93.08 & 90.33 & $-2.95\%$ \\
         Gold maximum end-to-end time (s) & 185 & 158 & $-14.59\%$ \\
-        Bronze mean end-to-end time (s) & 79.50 & 80.00 & $+0.63\%$ \\
         \bottomrule
     \end{tabular}
 \end{table}
-
-The class-level measurements show that Bronze behaviour remains essentially unchanged: mean execution time is 52.5~s in both cases, and mean end-to-end time changes only from 79.5 to 80.0~s. Gold mean end-to-end time decreases more modestly than the pool makespan, from 93.08 to 90.33~s. The largest system-level benefit is therefore concentrated at the end of the pool, where the final Gold completion moves from 185 to 158~s.
 
 \subsubsection{Evaluation}
 
@@ -446,4 +443,4 @@ D-Flex removes that artificial boundary. Every pending Gold Job retains both M a
 
 This result shows how performance can be extracted from DRA's more expressive allocation model in a specific workload lifecycle. DRA does not speed up CUDA execution and does not resize a running Job. Instead, the flexible \texttt{mig-fast} condition is re-evaluated for successive claims, allowing Kueue-admitted work to follow the availability of a heterogeneous MIG pool. Compared with the capacity-equivalent static policy, this reduces the tail of the pool and increases completed Jobs per unit time.
 
-The measured gain therefore belongs to the combined policy implemented with MIG, DRA, and Kueue. MIG provides independently usable S, M, and L devices; Kueue supplies priority-aware admission and quota control; DRA expresses and resolves the M-or-L requirement at each Job boundary. Within this scenario, their integration converts allocation flexibility into a measurable 14.59\% makespan reduction and 17.09\% throughput improvement over the credible static mixed baseline.
+The measured gain therefore belongs to the combined policy implemented with MIG, DRA, and Kueue. MIG provides independently usable S, M, and L devices; Kueue supplies priority-aware admission and quota control, finally DRA expresses and resolves the M-or-L requirement at each Job boundary. Within this scenario, their integration converts allocation flexibility into a measurable 14.59\% makespan reduction and 17.09\% throughput improvement over the credible static mixed baseline.
